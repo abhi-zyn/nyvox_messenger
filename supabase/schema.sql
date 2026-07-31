@@ -170,8 +170,8 @@ create policy "linked devices update profile"
   using (account_id = (select public.current_account_id()))
   with check (account_id = (select public.current_account_id()));
 
--- Device links: you may register your own device session, and see devices
--- linked to your own identity.
+-- Device links: you may register your own device session, see devices linked
+-- to your own identity, and re-link your own device (upsert retry path).
 create policy "register own device"
   on public.device_auth for insert
   to authenticated
@@ -184,6 +184,12 @@ create policy "read own device links"
     auth_uid = auth.uid()
     or account_id = (select public.current_account_id())
   );
+
+create policy "update own device link"
+  on public.device_auth for update
+  to authenticated
+  using (auth_uid = auth.uid())
+  with check (auth_uid = auth.uid());
 
 -- Conversations: visible only to members.
 create policy "members can read conversation"
