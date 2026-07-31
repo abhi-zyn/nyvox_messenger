@@ -85,6 +85,27 @@ as $$
 $$;
 
 -- ---------------------------------------------------------------------------
+-- 5b. HELPER: is the current caller a member of a conversation?
+--     SECURITY DEFINER so it bypasses RLS on conversation_members. Policies
+--     MUST use this instead of subquerying conversation_members directly — a
+--     policy that references its own table causes infinite recursion (42P17).
+--     Returns only a boolean scoped to the current caller, so it leaks nothing.
+-- ---------------------------------------------------------------------------
+create or replace function public.is_conversation_member(p_conversation_id uuid)
+returns boolean
+language sql
+stable
+security definer
+set search_path = public
+as $$
+  select exists (
+    select 1 from public.conversation_members
+    where conversation_id = p_conversation_id
+      and account_id = (select public.current_account_id())
+  )
+$$;
+
+-- ---------------------------------------------------------------------------
 -- 6. HELPER: create a 1-to-1 conversation atomically (or return existing one)
 --    SECURITY DEFINER lets it insert members for both sides in one call.
 -- ---------------------------------------------------------------------------
@@ -191,74 +212,40 @@ create policy "update own device link"
   using (auth_uid = auth.uid())
   with check (auth_uid = auth.uid());
 
--- Conversations: visible only to members.
+-- Conversations: visible only to members (via the recursion-safe helper).
 create policy "members can read conversation"
   on public.conversations for select
   to authenticated
-  using (
-    exists (
-      select 1 from public.conversation_members m
-      where m.conversation_id = id
-        and m.account_id = (select public.current_account_id())
-    )
-  );
+  using (public.is_conversation_member(id));
 
 create policy "members can read membership"
   on public.conversation_members for select
   to authenticated
-  using (
-    exists (
-      select 1 from public.conversation_members mine
-      where mine.conversation_id = conversation_id
-        and mine.account_id = (select public.current_account_id())
-    )
-  );
+  using (public.is_conversation_member(conversation_id));
 
 -- Messages: only conversation members can read; you send as your own identity.
 create policy "members can read messages"
   on public.messages for select
   to authenticated
-  using (
-    exists (
-      select 1 from public.conversation_members m
-      where m.conversation_id = conversation_id
-        and m.account_id = (select public.current_account_id())
-    )
-  );
+  using (public.is_conversation_member(conversation_id));
 
 create policy "members can send messages"
   on public.messages for insert
   to authenticated
   with check (
     sender_account_id = (select public.current_account_id())
-    and exists (
-      select 1 from public.conversation_members m
-      where m.conversation_id = conversation_id
-        and m.account_id = (select public.current_account_id())
-    )
+    and public.is_conversation_member(conversation_id)
   );
 
 create policy "members can update read receipt"
   on public.messages for update
   to authenticated
-  using (
-    exists (
-      select 1 from public.conversation_members m
-      where m.conversation_id = conversation_id
-        and m.account_id = (select public.current_account_id())
-    )
-  );
+  using (public.is_conversation_member(conversation_id));
 
 create policy "members can delete messages"
   on public.messages for delete
   to authenticated
-  using (
-    exists (
-      select 1 from public.conversation_members m
-      where m.conversation_id = conversation_id
-        and m.account_id = (select public.current_account_id())
-    )
-  );
+  using (public.is_conversation_member(conversation_id));
 
 -- ---------------------------------------------------------------------------
 -- 9. REALTIME — enable so clients get instant message delivery
