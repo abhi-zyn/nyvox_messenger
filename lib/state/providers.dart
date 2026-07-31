@@ -46,3 +46,11 @@ final messagesProvider = StreamProvider.autoDispose
         );
   },
 );
+
+/// Raw stream of every message visible to me (RLS-scoped) — used for local
+/// notifications on the home screen.
+final allMessagesProvider = StreamProvider<List<Map<String, dynamic>>>((ref) {
+  final session = ref.watch(appSessionProvider).value;
+  if (session == null) return const Stream.empty();
+  return ref.watch(chatServiceProvider).watchAllMessagesRaw();
+});

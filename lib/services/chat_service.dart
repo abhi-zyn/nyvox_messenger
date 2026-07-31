@@ -35,8 +35,8 @@ class ChatService {
     return res as String;
   }
 
-  /// All conversations I'm in, newest activity first, with peer profile
-  /// and last message for the list UI.
+  /// All conversations I'm in, newest activity first, with peer profile,
+  /// last message, and WhatsApp-style unread count for the list UI.
   Future<List<ConversationSummary>> listConversations(String myAccountId) async {
     final memberships = await _client
         .from('conversation_members')
@@ -71,6 +71,14 @@ class ChatService {
           .limit(1)
           .maybeSingle();
 
+      // Unread = incoming messages with no read receipt yet.
+      final unread = await _client
+          .from('messages')
+          .select('id')
+          .eq('conversation_id', convoId)
+          .neq('sender_account_id', myAccountId)
+          .isFilter('read_at', null);
+
       summaries.add(
         ConversationSummary(
           id: convoId,
@@ -85,6 +93,7 @@ class ChatService {
                   myAccountId: myAccountId,
                   plaintext: '🔒 encrypted message',
                 ),
+          unreadCount: (unread as List).length,
         ),
       );
     }
@@ -100,7 +109,9 @@ class ChatService {
   // ---------------------------------------------------------------- Messages
 
   /// Live stream of messages for one conversation (Supabase Realtime),
-  /// decrypted on arrival. Expired messages are filtered out.
+  /// decrypted on arrival, sorted oldest → newest (WhatsApp order — the
+  /// stream itself can emit realtime rows out of order).
+  /// Expired messages are filtered out.
   Stream<List<ChatMessage>> watchMessages({
     required String conversationId,
     required String myAccountId,
@@ -128,8 +139,19 @@ class ChatService {
           publicKeysByAccount: publicKeysByAccount,
         ));
       }
+      result.sort((a, b) => a.createdAt.compareTo(b.createdAt));
       return result;
     });
+  }
+
+  /// Raw stream of every message visible to me (RLS limits this to my own
+  /// conversations) — powers local notifications on the home screen.
+  Stream<List<Map<String, dynamic>>> watchAllMessagesRaw() {
+    return _client
+        .from('messages')
+        .stream(primaryKey: ['id'])
+        .order('created_at')
+        .map((rows) => rows.cast<Map<String, dynamic>>());
   }
 
   Future<ChatMessage> _decryptRow(
@@ -199,6 +221,18 @@ class ChatService {
         .from('messages')
         .update({'read_at': DateTime.now().toUtc().toIso8601String()})
         .eq('id', messageId)
+        .isFilter('read_at', null);
+  }
+
+  /// Mark every incoming message in a conversation as read — clears the
+  /// unread badge and sends read receipts to the sender.
+  Future<void> markConversationRead(
+      String conversationId, String myAccountId) async {
+    await _client
+        .from('messages')
+        .update({'read_at': DateTime.now().toUtc().toIso8601String()})
+        .eq('conversation_id', conversationId)
+        .neq('sender_account_id', myAccountId)
         .isFilter('read_at', null);
   }
 
