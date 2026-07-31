@@ -1,6 +1,10 @@
+import 'dart:convert';
+import 'dart:typed_data';
+
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../models/models.dart';
+import 'chat_media_service.dart';
 import 'crypto_service.dart';
 
 /// All backend chat operations. Plaintext never touches Supabase —
@@ -10,6 +14,7 @@ class ChatService {
 
   final SupabaseClient _client = Supabase.instance.client;
   final CryptoService _crypto;
+  final ChatMediaService _media = ChatMediaService();
 
   // ---------------------------------------------------------------- Contacts
 
@@ -54,7 +59,7 @@ class ChatService {
       if (!isGroup) {
         final peerRow = await _client
             .from('conversation_members')
-            .select('account_id, profiles(account_id, display_name, public_key, avatar_emoji)')
+            .select('account_id, profiles(account_id, display_name, public_key, avatar_emoji, avatar_url)')
             .eq('conversation_id', convoId)
             .neq('account_id', myAccountId)
             .maybeSingle();
@@ -91,7 +96,9 @@ class ChatService {
               : ChatMessage.fromJson(
                   last,
                   myAccountId: myAccountId,
-                  plaintext: '🔒 encrypted message',
+                  plaintext: last['attachment_path'] != null
+                      ? '📷 Photo'
+                      : '🔒 encrypted message',
                 ),
           unreadCount: (unread as List).length,
         ),
@@ -163,6 +170,11 @@ class ChatService {
     String? plaintext;
     try {
       final senderId = row['sender_account_id'] as String;
+      // Attachments aren't decrypted here (they open in the full-screen viewer).
+      if (row['attachment_path'] != null) {
+        return ChatMessage.fromJson(row,
+            myAccountId: myAccountId, plaintext: null);
+      }
       // The DM shared secret is X25519(my secret key, PEER's public key).
       // For messages from the peer, decrypt with the sender's (= peer's) key.
       // For MY OWN messages, the secret was ALSO derived with the peer's key —
@@ -214,6 +226,66 @@ class ChatService {
           ? null
           : DateTime.now().toUtc().add(disappearAfter).toIso8601String(),
     });
+  }
+
+  // -------------------------------------------------------- View-once images
+
+  /// Send a view-once image: E2E-encrypt the compressed bytes, store only the
+  /// ciphertext in the private chat-media bucket, and reference it from the
+  /// message row. Destroyed everywhere the moment the recipient opens it.
+  Future<void> sendViewOnceImage({
+    required String conversationId,
+    required NyvoxIdentity identity,
+    required Profile peer,
+    required Uint8List compressedJpg,
+  }) async {
+    final payload = await _crypto.encryptBytes(
+      myKeyPair: identity.keyPair,
+      peerPublicKeyHex: peer.publicKey,
+      data: compressedJpg,
+    );
+    final path =
+        '$conversationId/${identity.accountId}-${DateTime.now().millisecondsSinceEpoch}.bin';
+    await _client.from('messages').insert({
+      'conversation_id': conversationId,
+      'sender_account_id': identity.accountId,
+      'ciphertext': '',
+      'nonce': '',
+      'attachment_path': path,
+      'attachment_nonce': payload.nonceB64,
+    });
+    await _media.uploadCipher(path, base64Decode(payload.ciphertextB64));
+  }
+
+  /// Open a view-once image: download + decrypt, then — when [destroy] is true
+  /// (the recipient opening it) — delete the storage object AND the message
+  /// row, so it vanishes from both devices via realtime. The sender previewing
+  /// their own photo passes destroy: false so the recipient still gets it.
+  /// Returns the decrypted JPEG bytes for the full-screen viewer.
+  Future<Uint8List> openViewOnceImage({
+    required NyvoxIdentity identity,
+    required String decryptWithPublicKeyHex,
+    required ChatMessage message,
+    required bool destroy,
+  }) async {
+    final path = message.attachmentPath!;
+    final cipherBytes = await _media.downloadCipher(path);
+    final plain = await _crypto.decryptBytes(
+      myKeyPair: identity.keyPair,
+      senderPublicKeyHex: decryptWithPublicKeyHex,
+      ciphertextB64: base64Encode(cipherBytes),
+      nonceB64: message.attachmentNonce!,
+    );
+    if (destroy) {
+      try {
+        await _client.from('messages').delete().eq('id', message.id);
+      } finally {
+        try {
+          await _media.delete(path);
+        } catch (_) {}
+      }
+    }
+    return plain;
   }
 
   Future<void> markRead(String messageId) async {
