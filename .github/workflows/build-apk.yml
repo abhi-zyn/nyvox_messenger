@@ -25,17 +25,35 @@ jobs:
       - name: Generate Android platform files
         run: flutter create . --platforms=android --project-name=nyvox
 
+      # The logo PNG is stored as base64 (the API used to push this repo is
+      # text-only); decode it before use.
+      - name: Decode app logo asset
+        run: base64 -di assets/nyvox_logo.png.b64 > assets/nyvox_logo.png
+
       - name: Install dependencies
         run: flutter pub get
+
+      - name: Generate launcher icons from the logo
+        run: dart run flutter_launcher_icons
+
+      # Block screenshots & screen recording (and app-switcher previews).
+      - name: Enable FLAG_SECURE (no screenshots)
+        run: |
+          MAIN=android/app/src/main/kotlin/com/example/nyvox/MainActivity.kt
+          sed -i 's|import io.flutter.embedding.android.FlutterActivity|import android.os.Bundle\nimport android.view.WindowManager\nimport io.flutter.embedding.android.FlutterActivity|' "$MAIN"
+          sed -i 's|class MainActivity : FlutterActivity()|class MainActivity : FlutterActivity() {\n    override fun onCreate(savedInstanceState: Bundle?) {\n        super.onCreate(savedInstanceState)\n        window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)\n    }\n}|' "$MAIN"
+          cat "$MAIN"
+
+      # Allow posting notifications on Android 13+ (flutter create doesn't
+      # include it by default).
+      - name: Add notification permission
+        run: sed -i 's|    <application|    <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>\n    <application|' android/app/src/main/AndroidManifest.xml
 
       # Never block the build on lint warnings.
       - name: Analyze
         run: flutter analyze --no-fatal-infos --no-fatal-warnings || true
 
       # Supabase credentials are baked in at build time via --dart-define.
-      # The publishable key is Supabase's client-side key (safe to ship in the
-      # app); data access is enforced by Row Level Security. To rotate, edit
-      # these two lines or move the values into GitHub Secrets.
       - name: Build release APK
         run: |
           flutter build apk --release \

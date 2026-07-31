@@ -28,8 +28,9 @@ dependencies:
   # Contact sharing
   qr_flutter: ^4.1.0
   mobile_scanner: ^5.1.1
-  image_picker: ^1.1.2     # pick QR image from gallery
+  image_picker: ^1.1.2     # pick images from gallery
   share_plus: ^11.0.0      # share Account ID as custom text
+  image: ^4.2.0            # on-device image compression (avatars, chat photos)
 
   # UI helpers
   intl: ^0.19.0
@@ -42,6 +43,18 @@ dev_dependencies:
   flutter_test:
     sdk: flutter
   flutter_lints: ^4.0.0
+  flutter_launcher_icons: ^0.14.1
 
 flutter:
   uses-material-design: true
+  assets:
+    - assets/nyvox_logo.png
+
+# Generated in CI by `dart run flutter_launcher_icons` (see workflow).
+# The source PNG is stored as base64 and decoded by CI.
+flutter_launcher_icons:
+  android: true
+  ios: true
+  image_path: "assets/nyvox_logo.png"
+  adaptive_icon_background: "#000000"
+  adaptive_icon_foreground: "assets/nyvox_logo.png"
