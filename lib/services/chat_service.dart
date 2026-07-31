@@ -141,13 +141,22 @@ class ChatService {
     String? plaintext;
     try {
       final senderId = row['sender_account_id'] as String;
-      final senderKey = senderId == myAccountId
-          ? publicKeysByAccount[myAccountId] ?? identity.publicKeyHex
-          : publicKeysByAccount[senderId];
-      if (senderKey != null) {
+      // The DM shared secret is X25519(my secret key, PEER's public key).
+      // For messages from the peer, decrypt with the sender's (= peer's) key.
+      // For MY OWN messages, the secret was ALSO derived with the peer's key —
+      // using my own key here derives the wrong secret and AES-GCM fails.
+      final String? decryptWithKey;
+      if (senderId == myAccountId) {
+        final others = publicKeysByAccount.entries
+            .where((e) => e.key != myAccountId);
+        decryptWithKey = others.isEmpty ? null : others.first.value;
+      } else {
+        decryptWithKey = publicKeysByAccount[senderId];
+      }
+      if (decryptWithKey != null) {
         plaintext = await _crypto.decryptText(
           myKeyPair: identity.keyPair,
-          senderPublicKeyHex: senderKey,
+          senderPublicKeyHex: decryptWithKey,
           ciphertextB64: row['ciphertext'] as String,
           nonceB64: row['nonce'] as String,
         );
@@ -158,11 +167,8 @@ class ChatService {
     return ChatMessage.fromJson(row, myAccountId: myAccountId, plaintext: plaintext);
   }
 
-  /// Encrypt [text] for every *other* member of the conversation and upload
-  /// the ciphertext. In a DM there is exactly one recipient.
-  ///
-  /// Note: for simplicity the payload is encrypted once with the shared
-  /// secret derived from (my key, peer key) — both sides compute the same
+  /// Encrypt [text] with the DM shared secret — X25519(my secret key, peer's
+  /// public key) — and upload only the ciphertext. Both sides derive the same
   /// secret, so either can decrypt.
   Future<void> sendMessage({
     required String conversationId,
