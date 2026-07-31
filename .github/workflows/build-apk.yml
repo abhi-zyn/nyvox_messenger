@@ -25,10 +25,10 @@ jobs:
       - name: Generate Android platform files
         run: flutter create . --platforms=android --project-name=nyvox
 
-      # The logo PNG is stored as base64 (the API used to push this repo is
-      # text-only); decode it before use.
+      # The logo PNG is stored as base64 parts (the API used to push this repo
+      # is text-only); reassemble and decode it before use.
       - name: Decode app logo asset
-        run: base64 -di assets/nyvox_logo.png.b64 > assets/nyvox_logo.png
+        run: cat assets/logo_parts/part_* | base64 -di > assets/nyvox_logo.png
 
       - name: Install dependencies
         run: flutter pub get
