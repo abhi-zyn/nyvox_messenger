@@ -1,0 +1,18 @@
+# Flutter/Dart
+.dart_tool/
+.packages
+build/
+.flutter-plugins
+.flutter-plugins-dependencies
+
+# IDE
+.idea/
+.vscode/
+*.iml
+
+# Secrets — never commit your real keys
+lib/config/supabase_config.local.dart
+.env
+
+# OS
+.DS_Store
