@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:image_picker/image_picker.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
 
 import '../../models/models.dart';
@@ -139,19 +140,42 @@ class _AddContactScreenState extends ConsumerState<AddContactScreen> {
                 child: ListTile(
                   leading: CircleAvatar(
                     backgroundColor: NyvoxTheme.surfaceRaised,
-                    child: Text(_found!.avatarEmoji, style: const TextStyle(fontSize: 22)),
+                    backgroundImage: _found!.avatarUrl != null
+                        ? NetworkImage(_found!.avatarUrl!)
+                        : null,
+                    child: _found!.avatarUrl == null
+                        ? Text(_found!.avatarEmoji,
+                            style: const TextStyle(fontSize: 22))
+                        : null,
                   ),
-                  title: Text(_found!.displayName,
-                      style: const TextStyle(fontWeight: FontWeight.w700)),
-                  subtitle: Text(_found!.shortId,
-                      style: const TextStyle(fontFamily: 'monospace', fontSize: 11)),
-                  trailing: FilledButton.tonal(
-                    onPressed: _opening ? null : _openChat,
-                    child: _opening
+                  title: Text(
+                    _found!.displayName,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(fontWeight: FontWeight.w700),
+                  ),
+                  subtitle: Text(
+                    _found!.shortId,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(fontFamily: 'monospace', fontSize: 11),
+                  ),
+                  // Icon-sized button: the old text button got squeezed by the
+                  // ListTile and wrapped to one letter per line.
+                  trailing: IconButton.filled(
+                    style: IconButton.styleFrom(
+                      backgroundColor: NyvoxTheme.accent,
+                      foregroundColor: Colors.black,
+                    ),
+                    tooltip: 'Message',
+                    icon: _opening
                         ? const SizedBox(
-                            height: 16, width: 16,
-                            child: CircularProgressIndicator(strokeWidth: 2))
-                        : const Text('Message'),
+                            height: 16,
+                            width: 16,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          )
+                        : const Icon(Icons.chat_bubble_outline),
+                    onPressed: _opening ? null : _openChat,
                   ),
                 ),
               ),
@@ -171,13 +195,71 @@ class _QrScanScreen extends StatefulWidget {
 }
 
 class _QrScanScreenState extends State<_QrScanScreen> {
+  final MobileScannerController _controller = MobileScannerController(
+    detectionSpeed: DetectionSpeed.noDuplicates,
+  );
   bool _handled = false;
+
+  @override
+  void initState() {
+    super.initState();
+    // Start the camera after the first frame — starting too early can leave
+    // the scanner stuck on its error placeholder even with permission granted.
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      try {
+        await _controller.start();
+      } catch (_) {
+        // Already running or no camera — errorBuilder below shows the state.
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  Future<void> _pickFromGallery() async {
+    try {
+      final file = await ImagePicker().pickImage(source: ImageSource.gallery);
+      if (file == null) return;
+      final capture = await _controller.analyzeImage(file.path);
+      if (!mounted) return;
+      final value = (capture != null && capture.barcodes.isNotEmpty)
+          ? capture.barcodes.first.rawValue
+          : null;
+      if (value != null && value.isNotEmpty) {
+        Navigator.of(context).pop(value);
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('No QR code found in that image')),
+        );
+      }
+    } catch (_) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Could not scan that image')),
+      );
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('Scan Account QR')),
+      appBar: AppBar(
+        title: const Text('Scan Account QR'),
+        actions: [
+          IconButton(
+            tooltip: 'Pick from gallery',
+            icon: const Icon(Icons.photo_library_outlined),
+            onPressed: _pickFromGallery,
+          ),
+        ],
+      ),
       body: MobileScanner(
+        controller: _controller,
+        errorBuilder: (context, error, child) => const _ScannerErrorView(),
         onDetect: (capture) {
           if (_handled) return;
           final value = capture.barcodes.isEmpty
@@ -188,6 +270,37 @@ class _QrScanScreenState extends State<_QrScanScreen> {
             Navigator.of(context).pop(value);
           }
         },
+      ),
+    );
+  }
+}
+
+class _ScannerErrorView extends StatelessWidget {
+  const _ScannerErrorView();
+
+  @override
+  Widget build(BuildContext context) {
+    return const Center(
+      child: Padding(
+        padding: EdgeInsets.all(32),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Icons.videocam_off_outlined,
+                size: 48, color: NyvoxTheme.textSecondary),
+            SizedBox(height: 16),
+            Text(
+              'Camera unavailable',
+              style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600),
+            ),
+            SizedBox(height: 8),
+            Text(
+              'Check camera permission in system Settings, then close and reopen this screen.',
+              textAlign: TextAlign.center,
+              style: TextStyle(color: NyvoxTheme.textSecondary),
+            ),
+          ],
+        ),
       ),
     );
   }
