@@ -1,10 +1,13 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:image_picker/image_picker.dart';
 import 'package:intl/intl.dart';
 
 import '../../models/models.dart';
+import '../../services/chat_media_service.dart';
 import '../../state/providers.dart';
 import '../theme.dart';
+import 'view_once_widgets.dart';
 
 const _disappearOptions = <String, Duration?>{
   'Off': null,
@@ -28,11 +31,29 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   final _composer = TextEditingController();
   String _disappearLabel = 'Off';
   bool _sending = false;
+  bool _sendingImage = false;
+
+  @override
+  void initState() {
+    super.initState();
+    // Opening a chat marks its incoming messages read (clears the badge and
+    // sends read receipts).
+    WidgetsBinding.instance.addPostFrameCallback((_) => _markRead());
+  }
 
   @override
   void dispose() {
     _composer.dispose();
     super.dispose();
+  }
+
+  Future<void> _markRead() async {
+    final session = await ref.read(appSessionProvider.future);
+    if (session == null) return;
+    await ref
+        .read(chatServiceProvider)
+        .markConversationRead(widget.conversationId, session.accountId);
+    ref.invalidate(conversationsProvider);
   }
 
   Future<void> _send() async {
@@ -64,11 +85,51 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     }
   }
 
+  /// Pick a photo, compress it on-device, E2E-encrypt, and send view-once.
+  Future<void> _sendImage() async {
+    final session = await ref.read(appSessionProvider.future);
+    if (session == null || _sendingImage) return;
+    try {
+      final picked = await ImagePicker().pickImage(
+        source: ImageSource.gallery,
+        maxWidth: 1600,
+        imageQuality: 85,
+      );
+      if (picked == null) return;
+      setState(() => _sendingImage = true);
+      final bytes = await picked.readAsBytes();
+      final compressed = ChatMediaService().compressChatImage(bytes);
+      await ref.read(chatServiceProvider).sendViewOnceImage(
+            conversationId: widget.conversationId,
+            identity: session.identity,
+            peer: widget.peer,
+            compressedJpg: compressed,
+          );
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Could not send photo: $e')),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _sendingImage = false);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
-    final messages = ref.watch(
-      messagesProvider((conversationId: widget.conversationId, peer: widget.peer)),
-    );
+    final args = (conversationId: widget.conversationId, peer: widget.peer);
+
+    // While the chat is open, mark any new incoming messages read.
+    ref.listen(messagesProvider(args), (previous, next) {
+      final items = next.value;
+      if (items != null && items.any((m) => !m.isMine && m.readAt == null)) {
+        _markRead();
+      }
+    });
+
+    final messages = ref.watch(messagesProvider(args));
+    final avatarUrl = widget.peer.avatarUrl;
 
     return Scaffold(
       appBar: AppBar(
@@ -78,7 +139,11 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
             CircleAvatar(
               radius: 18,
               backgroundColor: NyvoxTheme.surfaceRaised,
-              child: Text(widget.peer.avatarEmoji),
+              backgroundImage:
+                  avatarUrl != null ? NetworkImage(avatarUrl) : null,
+              child: avatarUrl == null
+                  ? Text(widget.peer.avatarEmoji)
+                  : null,
             ),
             const SizedBox(width: 12),
             Expanded(
@@ -142,12 +207,24 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                       reverse: true,
                       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
                       itemCount: items.length,
-                      itemBuilder: (context, i) =>
-                          _MessageBubble(message: items[items.length - 1 - i]),
+                      itemBuilder: (context, i) {
+                        final message = items[items.length - 1 - i];
+                        if (message.isViewOnceImage) {
+                          return ViewOnceTile(
+                              message: message, peer: widget.peer);
+                        }
+                        return _MessageBubble(message: message);
+                      },
                     ),
             ),
           ),
-          _Composer(controller: _composer, sending: _sending, onSend: _send),
+          _Composer(
+            controller: _composer,
+            sending: _sending,
+            sendingImage: _sendingImage,
+            onSend: _send,
+            onAttach: _sendImage,
+          ),
         ],
       ),
     );
@@ -223,11 +300,19 @@ class _MessageBubble extends StatelessWidget {
 }
 
 class _Composer extends StatelessWidget {
-  const _Composer({required this.controller, required this.sending, required this.onSend});
+  const _Composer({
+    required this.controller,
+    required this.sending,
+    required this.sendingImage,
+    required this.onSend,
+    required this.onAttach,
+  });
 
   final TextEditingController controller;
   final bool sending;
+  final bool sendingImage;
   final VoidCallback onSend;
+  final VoidCallback onAttach;
 
   @override
   Widget build(BuildContext context) {
@@ -236,6 +321,15 @@ class _Composer extends StatelessWidget {
         padding: const EdgeInsets.fromLTRB(12, 4, 12, 12),
         child: Row(
           children: [
+            IconButton(
+              tooltip: 'Send a view-once photo',
+              icon: sendingImage
+                  ? const SizedBox(
+                      height: 18, width: 18,
+                      child: CircularProgressIndicator(strokeWidth: 2))
+                  : const Icon(Icons.photo_outlined),
+              onPressed: sendingImage ? null : onAttach,
+            ),
             Expanded(
               child: TextField(
                 controller: controller,
