@@ -51,10 +51,12 @@ flutter:
     - assets/nyvox_logo.png
 
 # Generated in CI by `dart run flutter_launcher_icons` (see workflow).
-# The source PNG is stored as base64 and decoded by CI.
+# The source PNG is stored as base64 parts and reassembled by CI.
+# Android only — CI generates just the android/ scaffold, so enabling iOS
+# here crashes the generator (no ios/ folder exists).
 flutter_launcher_icons:
   android: true
-  ios: true
+  ios: false
   image_path: "assets/nyvox_logo.png"
   adaptive_icon_background: "#000000"
   adaptive_icon_foreground: "assets/nyvox_logo.png"
