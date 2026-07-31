@@ -74,6 +74,7 @@ class ConversationSummary {
     this.title,
     this.peer,
     this.lastMessage,
+    this.unreadCount = 0,
   });
 
   final String id;
@@ -82,6 +83,9 @@ class ConversationSummary {
   final Profile? peer;
   final ChatMessage? lastMessage;
   final DateTime createdAt;
+
+  /// Incoming messages not yet marked read — shown as a badge, WhatsApp-style.
+  final int unreadCount;
 
   String get displayName => peer?.displayName ?? title ?? 'Conversation';
   String get avatarEmoji => peer?.avatarEmoji ?? '💬';

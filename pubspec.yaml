@@ -28,10 +28,15 @@ dependencies:
   # Contact sharing
   qr_flutter: ^4.1.0
   mobile_scanner: ^5.1.1
+  image_picker: ^1.1.2     # pick QR image from gallery
+  share_plus: ^11.0.0      # share Account ID as custom text
 
   # UI helpers
   intl: ^0.19.0
   timeago: ^3.7.0
+
+  # Local notifications (privacy-safe: never contains message content)
+  flutter_local_notifications: ^18.0.1
 
 dev_dependencies:
   flutter_test:
