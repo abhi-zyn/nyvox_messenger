@@ -4,18 +4,21 @@ class Profile {
     required this.displayName,
     required this.publicKey,
     required this.avatarEmoji,
+    this.avatarUrl,
   });
 
   final String accountId;
   final String displayName;
   final String publicKey;
   final String avatarEmoji;
+  final String? avatarUrl;
 
   factory Profile.fromJson(Map<String, dynamic> json) => Profile(
         accountId: json['account_id'] as String,
         displayName: json['display_name'] as String? ?? 'Anonymous',
         publicKey: json['public_key'] as String? ?? '',
         avatarEmoji: json['avatar_emoji'] as String? ?? '🕶️',
+        avatarUrl: json['avatar_url'] as String?,
       );
 
   String get shortId =>
@@ -32,18 +35,27 @@ class ChatMessage {
     required this.isMine,
     this.expiresAt,
     this.readAt,
+    this.attachmentPath,
+    this.attachmentNonce,
   });
 
   final String id;
   final String conversationId;
   final String senderAccountId;
 
-  /// Decrypted on-device. Null when decryption failed (e.g. unknown sender key).
+  /// Decrypted on-device. Null when decryption failed or this is an attachment.
   final String? plaintext;
   final DateTime createdAt;
   final DateTime? expiresAt;
   final DateTime? readAt;
   final bool isMine;
+
+  /// View-once image: storage path in the private chat-media bucket + its
+  /// AES-GCM nonce. Deleted everywhere the moment the recipient opens it.
+  final String? attachmentPath;
+  final String? attachmentNonce;
+
+  bool get isViewOnceImage => attachmentPath != null;
 
   factory ChatMessage.fromJson(
     Map<String, dynamic> json, {
@@ -63,6 +75,8 @@ class ChatMessage {
             ? null
             : DateTime.parse(json['read_at'] as String).toLocal(),
         isMine: json['sender_account_id'] == myAccountId,
+        attachmentPath: json['attachment_path'] as String?,
+        attachmentNonce: json['attachment_nonce'] as String?,
       );
 }
 

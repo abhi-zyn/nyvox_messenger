@@ -83,13 +83,13 @@ class CryptoService {
     return secret;
   }
 
-  Future<EncryptedPayload> encryptText({
+  Future<EncryptedPayload> encryptBytes({
     required SimpleKeyPair myKeyPair,
     required String peerPublicKeyHex,
-    required String plaintext,
+    required Uint8List data,
   }) async {
     final secret = await _sharedSecret(myKeyPair, peerPublicKeyHex);
-    final box = await _aes.encrypt(utf8.encode(plaintext), secretKey: secret);
+    final box = await _aes.encrypt(data, secretKey: secret);
     final combined = <int>[...box.cipherText, ...box.mac.bytes];
     return EncryptedPayload(
       ciphertextB64: base64Encode(combined),
@@ -97,7 +97,18 @@ class CryptoService {
     );
   }
 
-  Future<String> decryptText({
+  Future<EncryptedPayload> encryptText({
+    required SimpleKeyPair myKeyPair,
+    required String peerPublicKeyHex,
+    required String plaintext,
+  }) =>
+      encryptBytes(
+        myKeyPair: myKeyPair,
+        peerPublicKeyHex: peerPublicKeyHex,
+        data: Uint8List.fromList(utf8.encode(plaintext)),
+      );
+
+  Future<Uint8List> decryptBytes({
     required SimpleKeyPair myKeyPair,
     required String senderPublicKeyHex,
     required String ciphertextB64,
@@ -115,6 +126,19 @@ class CryptoService {
       ),
       secretKey: secret,
     );
-    return utf8.decode(plainBytes);
+    return Uint8List.fromList(plainBytes);
   }
+
+  Future<String> decryptText({
+    required SimpleKeyPair myKeyPair,
+    required String senderPublicKeyHex,
+    required String ciphertextB64,
+    required String nonceB64,
+  }) async =>
+      utf8.decode(await decryptBytes(
+        myKeyPair: myKeyPair,
+        senderPublicKeyHex: senderPublicKeyHex,
+        ciphertextB64: ciphertextB64,
+        nonceB64: nonceB64,
+      ));
 }
