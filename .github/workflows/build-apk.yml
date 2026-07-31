@@ -32,13 +32,15 @@ jobs:
       - name: Analyze
         run: flutter analyze --no-fatal-infos --no-fatal-warnings || true
 
-      # Supabase credentials come from GitHub Secrets (Settings → Secrets and
-      # variables → Actions) and are baked into the app at build time.
+      # Supabase credentials are baked in at build time via --dart-define.
+      # The publishable key is Supabase's client-side key (safe to ship in the
+      # app); data access is enforced by Row Level Security. To rotate, edit
+      # these two lines or move the values into GitHub Secrets.
       - name: Build release APK
         run: |
           flutter build apk --release \
-            --dart-define=SUPABASE_URL="${{ secrets.SUPABASE_URL }}" \
-            --dart-define=SUPABASE_ANON_KEY="${{ secrets.SUPABASE_ANON_KEY }}"
+            --dart-define=SUPABASE_URL="https://vodttlhalrzqpsmowpaz.supabase.co" \
+            --dart-define=SUPABASE_ANON_KEY="sb_publishable_YSWHXWMFdnFjbqoXBnfoyQ_i041nuvP"
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4

@@ -3,20 +3,19 @@
 Every push to `main` (or a manual run) builds `app-release.apk` in the cloud —
 no local Flutter install needed.
 
-## One-time setup: add your Supabase secrets (2 minutes)
+## Supabase credentials
 
-The workflow injects your Supabase credentials at build time via
-`--dart-define`, so they are **never committed to git**.
+Your Supabase URL and **publishable** key are baked into the app at build time
+via `--dart-define` in [`.github/workflows/build-apk.yml`](.github/workflows/build-apk.yml).
+The publishable key is Supabase's client-side key — it is designed to ship
+inside apps; data access is enforced by Row Level Security (see
+[`supabase/schema.sql`](supabase/schema.sql)). Never use the `service_role`
+key here.
 
-1. Open the repo on GitHub → **Settings** → **Secrets and variables** → **Actions**.
-2. Click **New repository secret** and add:
-
-| Name                  | Value (Supabase Dashboard → Project Settings → API) |
-| --------------------- | --------------------------------------------------- |
-| `SUPABASE_URL`        | Project URL, e.g. `https://abcdefgh.supabase.co`    |
-| `SUPABASE_ANON_KEY`   | `anon` / `public` key (the long JWT)                |
-
-> Use the **anon public** key only — never the `service_role` key.
+To rotate or change projects, edit the two `--dart-define` lines in the
+workflow file. (Optionally, move them to repo **Settings → Secrets and
+variables → Actions** and reference `${{ secrets.SUPABASE_URL }}` /
+`${{ secrets.SUPABASE_ANON_KEY }}` instead.)
 
 ## Build & download the APK
 
@@ -33,8 +32,9 @@ The workflow injects your Supabase credentials at build time via
   the Android scaffold, since the repo intentionally contains only `lib/` and
   `pubspec.yaml`.
 - `flutter analyze` runs in non-blocking mode — warnings won't fail the build.
-- Builds without the secrets still succeed, but the app can't reach Supabase
-  until you add them and rebuild.
+- **Before the app can log in, finish the Supabase side**: enable anonymous
+  sign-ins and run `supabase/schema.sql` in the SQL editor — see
+  [`supabase/SETUP.md`](supabase/SETUP.md).
 - To ship via the Play Store later, build an App Bundle instead:
   `flutter build appbundle --release` (requires signing — see
   https://docs.flutter.dev/deployment/android#signing-the-app).
