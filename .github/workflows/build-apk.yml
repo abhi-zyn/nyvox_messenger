@@ -1,0 +1,48 @@
+name: Build Android APK
+
+# Runs on every push to main, and manually via Actions → "Build Android APK" → Run workflow.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build-apk:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      # The repo only contains lib/ + pubspec.yaml; this generates the
+      # android/ platform scaffold needed to build (does not touch lib/).
+      - name: Generate Android platform files
+        run: flutter create . --platforms=android --project-name=nyvox
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      # Never block the build on lint warnings.
+      - name: Analyze
+        run: flutter analyze --no-fatal-infos --no-fatal-warnings || true
+
+      # Supabase credentials come from GitHub Secrets (Settings → Secrets and
+      # variables → Actions) and are baked into the app at build time.
+      - name: Build release APK
+        run: |
+          flutter build apk --release \
+            --dart-define=SUPABASE_URL="${{ secrets.SUPABASE_URL }}" \
+            --dart-define=SUPABASE_ANON_KEY="${{ secrets.SUPABASE_ANON_KEY }}"
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: nyvox-release-apk
+          path: build/app/outputs/flutter-apk/app-release.apk
+          retention-days: 30
