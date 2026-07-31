@@ -18,9 +18,9 @@ class NyvoxApp extends ConsumerWidget {
       debugShowCheckedModeBanner: false,
       theme: NyvoxTheme.dark(),
       home: switch (session) {
-        AsyncLoading() => const Scaffold(
-            body: Center(child: CircularProgressIndicator()),
-          ),
+        // Identity found on this device → chats; none → onboarding.
+        AsyncData(:final value) =>
+          value == null ? const OnboardingScreen() : const HomeScreen(),
         AsyncError(:final error) => Scaffold(
             body: Center(
               child: Padding(
@@ -32,9 +32,10 @@ class NyvoxApp extends ConsumerWidget {
               ),
             ),
           ),
-        // No identity on this device → onboarding; otherwise → chats.
-        AsyncData(:final value) =>
-          value == null ? const OnboardingScreen() : const HomeScreen(),
+        // Loading and any other state.
+        _ => const Scaffold(
+            body: Center(child: CircularProgressIndicator()),
+          ),
       },
     );
   }
