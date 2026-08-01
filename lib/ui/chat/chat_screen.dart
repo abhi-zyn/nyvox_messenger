@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -155,7 +156,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
             conversationId: widget.conversationId,
             identity: session.identity,
             peer: widget.peer,
-            bytes: picked.bytes,
+            bytes: Uint8List.fromList(picked.bytes),
             type: 'file',
             name: picked.name,
             size: picked.size,
