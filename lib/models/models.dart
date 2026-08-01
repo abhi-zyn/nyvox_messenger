@@ -37,6 +37,9 @@ class ChatMessage {
     this.readAt,
     this.attachmentPath,
     this.attachmentNonce,
+    this.attachmentType,
+    this.attachmentName,
+    this.attachmentSize,
   });
 
   final String id;
@@ -50,12 +53,23 @@ class ChatMessage {
   final DateTime? readAt;
   final bool isMine;
 
-  /// View-once image: storage path in the private chat-media bucket + its
-  /// AES-GCM nonce. Deleted everywhere the moment the recipient opens it.
+  /// Attachment stored in the private chat-media bucket. View-once items
+  /// (images and files) are destroyed everywhere the moment the recipient
+  /// opens them; voice notes persist like normal messages.
   final String? attachmentPath;
   final String? attachmentNonce;
+  final String? attachmentType; // image | file | voice
+  final String? attachmentName;
+  final int? attachmentSize;
 
-  bool get isViewOnceImage => attachmentPath != null;
+  bool get hasAttachment => attachmentPath != null;
+
+  /// Images sent before attachment_type existed have a null type.
+  bool get isViewOnceImage =>
+      hasAttachment && (attachmentType == null || attachmentType == 'image');
+  bool get isFileAttachment => attachmentType == 'file';
+  bool get isVoiceAttachment => attachmentType == 'voice';
+  bool get isViewOnce => hasAttachment && !isVoiceAttachment;
 
   factory ChatMessage.fromJson(
     Map<String, dynamic> json, {
@@ -77,6 +91,9 @@ class ChatMessage {
         isMine: json['sender_account_id'] == myAccountId,
         attachmentPath: json['attachment_path'] as String?,
         attachmentNonce: json['attachment_nonce'] as String?,
+        attachmentType: json['attachment_type'] as String?,
+        attachmentName: json['attachment_name'] as String?,
+        attachmentSize: json['attachment_size'] as int?,
       );
 }
 
@@ -103,4 +120,28 @@ class ConversationSummary {
 
   String get displayName => peer?.displayName ?? title ?? 'Conversation';
   String get avatarEmoji => peer?.avatarEmoji ?? '💬';
+}
+
+/// A live conversation row — carries the synced disappearing-message timer,
+/// so when one member changes it, everyone's app updates via realtime.
+class ConversationInfo {
+  const ConversationInfo({
+    required this.id,
+    required this.isGroup,
+    this.title,
+    this.disappearSeconds,
+  });
+
+  final String id;
+  final bool isGroup;
+  final String? title;
+  final int? disappearSeconds;
+
+  factory ConversationInfo.fromJson(Map<String, dynamic> json) =>
+      ConversationInfo(
+        id: json['id'] as String,
+        isGroup: json['is_group'] as bool? ?? false,
+        title: json['title'] as String?,
+        disappearSeconds: json['disappear_seconds'] as int?,
+      );
 }
