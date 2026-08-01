@@ -1,3 +1,4 @@
+import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:audioplayers/audioplayers.dart';
@@ -5,245 +6,153 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:open_filex/open_filex.dart';
 
-import '../../data/models.dart';
+import '../../models/models.dart';
+import '../../services/file_service.dart';
 import '../../state/providers.dart';
 import '../theme.dart';
 
-String _fmtBytes(int? bytes) {
-  if (bytes == null) return '';
-  if (bytes < 1024) return '$bytes B';
-  if (bytes < 1024 * 1024) return '${(bytes / 1024).toStringAsFixed(1)} KB';
-  return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
+/// Shared bubble chrome for every view-once attachment type.
+class _AttachmentShell extends StatelessWidget {
+  const _AttachmentShell({required this.isMine, required this.child});
+
+  final bool isMine;
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    return Align(
+      alignment: isMine ? Alignment.centerRight : Alignment.centerLeft,
+      child: Container(
+        margin: const EdgeInsets.symmetric(vertical: 3),
+        padding: const EdgeInsets.all(10),
+        constraints:
+            BoxConstraints(maxWidth: MediaQuery.of(context).size.width * 0.76),
+        decoration: BoxDecoration(
+          color: isMine ? NyvoxTheme.accent : NyvoxTheme.surfaceRaised,
+          borderRadius: BorderRadius.only(
+            topLeft: const Radius.circular(18),
+            topRight: const Radius.circular(18),
+            bottomLeft: Radius.circular(isMine ? 18 : 4),
+            bottomRight: Radius.circular(isMine ? 4 : 18),
+          ),
+        ),
+        child: child,
+      ),
+    );
+  }
 }
 
-String _fmtDur(Duration d) {
-  final m = d.inMinutes.remainder(60).toString().padLeft(2, '0');
-  final s = d.inSeconds.remainder(60).toString().padLeft(2, '0');
-  return '$m:$s';
-}
-
-/// Blurred view-once image tile — recipient taps to reveal; the image is
-/// then destroyed everywhere. Sender sees a non-interactive "sent" state.
+/// A view-once PHOTO. Tapping it decrypts in memory, shows it full screen,
+/// and destroys the ciphertext on the server the moment it is opened.
 class ViewOnceTile extends ConsumerStatefulWidget {
-  const ViewOnceTile({
-    super.key,
-    required this.message,
-    required this.isMine,
-    this.peer,
-    this.groupKey,
-  });
+  const ViewOnceTile({super.key, required this.message, required this.peer});
 
   final ChatMessage message;
-  final bool isMine;
-  final Profile? peer;
-  final List<int>? groupKey;
+  final Profile peer;
 
   @override
   ConsumerState<ViewOnceTile> createState() => _ViewOnceTileState();
 }
 
 class _ViewOnceTileState extends ConsumerState<ViewOnceTile> {
-  bool _opening = false;
+  bool _busy = false;
 
   Future<void> _open() async {
-    if (_opening) return;
-    setState(() => _opening = true);
+    if (_busy) return;
+    final session = await ref.read(appSessionProvider.future);
+    if (session == null) return;
+    setState(() => _busy = true);
     try {
-      final session = await ref.read(appSessionProvider.future);
-      if (session == null) return;
-      final bytes = await ref.read(chatServiceProvider).openAttachment(
+      final bytes = await ref.read(chatServiceProvider).openViewOnceAttachment(
             message: widget.message,
-            session: session,
+            identity: session.identity,
             peer: widget.peer,
-            groupKey: widget.groupKey,
+            destroy: !widget.message.isMine,
           );
+      if (bytes == null) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('This photo is no longer available')),
+          );
+        }
+        return;
+      }
       if (!mounted) return;
-      await Navigator.of(context).push(MaterialPageRoute(
-        builder: (_) =>
-            ViewOnceImagePage(imageBytes: Uint8List.fromList(bytes)),
-      ));
+      await showDialog<void>(
+        context: context,
+        barrierColor: Colors.black,
+        builder: (ctx) => Dialog.fullscreen(
+          backgroundColor: Colors.black,
+          child: Stack(
+            children: [
+              Center(child: InteractiveViewer(child: Image.memory(bytes))),
+              Positioned(
+                top: 12,
+                right: 12,
+                child: IconButton(
+                  icon: const Icon(Icons.close, color: Colors.white),
+                  onPressed: () => Navigator.pop(ctx),
+                ),
+              ),
+              const Positioned(
+                bottom: 24,
+                left: 0,
+                right: 0,
+                child: Text(
+                  'View once \u2014 this photo is gone when you close it',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(color: Colors.white70, fontSize: 12),
+                ),
+              ),
+            ],
+          ),
+        ),
+      );
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Could not open the photo')),
-        );
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('Could not open: $e')));
       }
     } finally {
-      if (mounted) setState(() => _opening = false);
+      if (mounted) setState(() => _busy = false);
     }
   }
 
   @override
   Widget build(BuildContext context) {
-    final label = widget.isMine ? 'You sent a photo' : 'Photo';
-    return GestureDetector(
-      onTap: widget.isMine || _opening ? null : _open,
-      child: Container(
-        width: 220,
-        height: 150,
-        decoration: BoxDecoration(
-          color: Colors.black,
-          borderRadius: BorderRadius.circular(16),
-          border: Border.all(color: NyvoxTheme.accent.withValues(alpha: 0.4)),
-        ),
-        child: Center(
-          child: _opening
-              ? const CircularProgressIndicator(strokeWidth: 2)
-              : Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    const Text('📷', style: TextStyle(fontSize: 28)),
-                    const SizedBox(height: 8),
-                    Text(
-                      label,
-                      style: const TextStyle(fontWeight: FontWeight.w600),
-                    ),
-                    const SizedBox(height: 4),
-                    Text(
-                      widget.isMine ? 'View-once' : 'Tap to view',
-                      style: const TextStyle(
-                        color: NyvoxTheme.textSecondary,
-                        fontSize: 12,
-                      ),
-                    ),
-                  ],
-                ),
-        ),
-      ),
-    );
-  }
-}
-
-/// Full-screen viewer for a view-once image. Nothing is written to disk.
-class ViewOnceImagePage extends StatelessWidget {
-  const ViewOnceImagePage({super.key, required this.imageBytes});
-
-  final Uint8List imageBytes;
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: Colors.black,
-      appBar: AppBar(
-        backgroundColor: Colors.black,
-        title: const Text('View-once photo'),
-      ),
-      body: Column(
-        children: [
-          Expanded(
-            child: InteractiveViewer(
-              child: Center(child: Image.memory(imageBytes)),
-            ),
-          ),
-          const Padding(
-            padding: EdgeInsets.all(20),
-            child: Text(
-              '🔥 This photo is destroyed everywhere when you close it',
-              textAlign: TextAlign.center,
-              style: TextStyle(color: NyvoxTheme.textSecondary, fontSize: 13),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-/// View-once file tile (PDF, documents…). Tapping decrypts the file,
-/// opens it once in a temp viewer, then destroys it everywhere.
-class ViewOnceFileTile extends ConsumerStatefulWidget {
-  const ViewOnceFileTile({
-    super.key,
-    required this.message,
-    required this.isMine,
-    this.peer,
-    this.groupKey,
-  });
-
-  final ChatMessage message;
-  final bool isMine;
-  final Profile? peer;
-  final List<int>? groupKey;
-
-  @override
-  ConsumerState<ViewOnceFileTile> createState() => _ViewOnceFileTileState();
-}
-
-class _ViewOnceFileTileState extends ConsumerState<ViewOnceFileTile> {
-  bool _opening = false;
-
-  Future<void> _open() async {
-    if (_opening) return;
-    setState(() => _opening = true);
-    String? tempPath;
-    try {
-      final session = await ref.read(appSessionProvider.future);
-      if (session == null) return;
-      final files = ref.read(fileServiceProvider);
-      final bytes = await ref.read(chatServiceProvider).openAttachment(
-            message: widget.message,
-            session: session,
-            peer: widget.peer,
-            groupKey: widget.groupKey,
-          );
-      tempPath = await files.writeTempFile(
-          widget.message.attachmentName ?? 'nyvox-file', bytes);
-      await OpenFilex.open(tempPath);
-    } catch (_) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Could not open the file')),
-        );
-      }
-    } finally {
-      if (tempPath != null) {
-        await ref.read(fileServiceProvider).deleteTempFile(tempPath);
-      }
-      if (mounted) setState(() => _opening = false);
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return GestureDetector(
-      onTap: widget.isMine || _opening ? null : _open,
-      child: Container(
-        width: 240,
-        padding: const EdgeInsets.all(14),
-        decoration: BoxDecoration(
-          color: Colors.black,
-          borderRadius: BorderRadius.circular(16),
-          border: Border.all(color: NyvoxTheme.accent.withValues(alpha: 0.4)),
-        ),
+    final mine = widget.message.isMine;
+    final opened = widget.message.viewedAt != null;
+    final fg = mine ? Colors.black : NyvoxTheme.textPrimary;
+    return _AttachmentShell(
+      isMine: mine,
+      child: InkWell(
+        onTap: opened && !mine ? null : _open,
         child: Row(
+          mainAxisSize: MainAxisSize.min,
           children: [
-            _opening
+            _busy
                 ? const SizedBox(
-                    width: 28,
-                    height: 28,
-                    child: CircularProgressIndicator(strokeWidth: 2),
-                  )
-                : const Icon(Icons.insert_drive_file,
-                    color: NyvoxTheme.accent, size: 28),
-            const SizedBox(width: 12),
-            Expanded(
+                    height: 20,
+                    width: 20,
+                    child: CircularProgressIndicator(strokeWidth: 2))
+                : Icon(opened ? Icons.visibility_off : Icons.photo_camera,
+                    color: fg),
+            const SizedBox(width: 10),
+            Flexible(
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
                 children: [
                   Text(
-                    widget.message.attachmentName ?? 'File',
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(fontWeight: FontWeight.w600),
+                    opened ? 'Photo opened' : 'View-once photo',
+                    style: TextStyle(
+                        color: fg, fontWeight: FontWeight.w600, fontSize: 14),
                   ),
-                  const SizedBox(height: 2),
                   Text(
-                    '${_fmtBytes(widget.message.attachmentSize)} · '
-                    '${widget.isMine ? 'View-once' : 'Tap to open once'}',
-                    style: const TextStyle(
-                      color: NyvoxTheme.textSecondary,
-                      fontSize: 12,
-                    ),
+                    opened ? 'No longer available' : 'Tap to view once',
+                    style: TextStyle(
+                        color: mine ? Colors.black54 : NyvoxTheme.textSecondary,
+                        fontSize: 11),
                   ),
                 ],
               ),
@@ -255,21 +164,149 @@ class _ViewOnceFileTileState extends ConsumerState<ViewOnceFileTile> {
   }
 }
 
-/// WhatsApp-style voice note bubble with play/pause and progress.
-/// Voice notes are encrypted like everything else but persist in the chat.
-class VoiceNoteBubble extends ConsumerStatefulWidget {
-  const VoiceNoteBubble({
-    super.key,
-    required this.message,
-    required this.isMine,
-    this.peer,
-    this.groupKey,
-  });
+/// A view-once FILE (PDF, doc, video...). Decrypted to a temp file, opened
+/// with the system viewer, then the temp copy is deleted immediately.
+class ViewOnceFileTile extends ConsumerStatefulWidget {
+  const ViewOnceFileTile(
+      {super.key, required this.message, required this.peer});
 
   final ChatMessage message;
-  final bool isMine;
-  final Profile? peer;
-  final List<int>? groupKey;
+  final Profile peer;
+
+  @override
+  ConsumerState<ViewOnceFileTile> createState() => _ViewOnceFileTileState();
+}
+
+class _ViewOnceFileTileState extends ConsumerState<ViewOnceFileTile> {
+  bool _busy = false;
+
+  static String _prettySize(int? bytes) {
+    if (bytes == null || bytes <= 0) return '';
+    const units = ['B', 'KB', 'MB', 'GB'];
+    var size = bytes.toDouble();
+    var unit = 0;
+    while (size >= 1024 && unit < units.length - 1) {
+      size /= 1024;
+      unit++;
+    }
+    return '${size.toStringAsFixed(size >= 10 || unit == 0 ? 0 : 1)} ${units[unit]}';
+  }
+
+  static IconData _iconFor(String? name) {
+    final ext = (name ?? '').toLowerCase().split('.').last;
+    if (ext == 'pdf') return Icons.picture_as_pdf;
+    if (['doc', 'docx', 'txt', 'rtf', 'odt'].contains(ext)) {
+      return Icons.description;
+    }
+    if (['xls', 'xlsx', 'csv'].contains(ext)) return Icons.table_chart;
+    if (['mp4', 'mov', 'mkv', 'webm'].contains(ext)) return Icons.movie;
+    if (['zip', 'rar', '7z'].contains(ext)) return Icons.folder_zip;
+    return Icons.insert_drive_file;
+  }
+
+  Future<void> _open() async {
+    if (_busy) return;
+    final session = await ref.read(appSessionProvider.future);
+    if (session == null) return;
+    setState(() => _busy = true);
+    File? temp;
+    try {
+      final bytes = await ref.read(chatServiceProvider).openViewOnceAttachment(
+            message: widget.message,
+            identity: session.identity,
+            peer: widget.peer,
+            destroy: !widget.message.isMine,
+          );
+      if (bytes == null) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('This file is no longer available')),
+          );
+        }
+        return;
+      }
+      temp = await FileService().writeTempFile(
+        bytes,
+        widget.message.attachmentName ?? 'nyvox_file',
+      );
+      await OpenFilex.open(temp.path);
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('Could not open file: $e')));
+      }
+    } finally {
+      // Never leave plaintext lying around on disk.
+      if (temp != null) {
+        Future.delayed(const Duration(minutes: 2), () async {
+          try {
+            if (await temp!.exists()) await temp.delete();
+          } catch (_) {}
+        });
+      }
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final m = widget.message;
+    final mine = m.isMine;
+    final opened = m.viewedAt != null;
+    final fg = mine ? Colors.black : NyvoxTheme.textPrimary;
+    final sub = mine ? Colors.black54 : NyvoxTheme.textSecondary;
+    final size = _prettySize(m.attachmentSize);
+
+    return _AttachmentShell(
+      isMine: mine,
+      child: InkWell(
+        onTap: opened && !mine ? null : _open,
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            _busy
+                ? const SizedBox(
+                    height: 22,
+                    width: 22,
+                    child: CircularProgressIndicator(strokeWidth: 2))
+                : Icon(opened ? Icons.lock_outline : _iconFor(m.attachmentName),
+                    color: fg, size: 26),
+            const SizedBox(width: 10),
+            Flexible(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    m.attachmentName ?? 'Encrypted file',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                        color: fg, fontWeight: FontWeight.w600, fontSize: 14),
+                  ),
+                  Text(
+                    opened
+                        ? 'Opened \u2014 no longer available'
+                        : [if (size.isNotEmpty) size, 'Tap to open once']
+                            .join(' \u00b7 '),
+                    style: TextStyle(color: sub, fontSize: 11),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// An encrypted voice note. Decrypted to a temp file for playback only.
+class VoiceNoteBubble extends ConsumerStatefulWidget {
+  const VoiceNoteBubble({super.key, required this.message, required this.peer});
+
+  final ChatMessage message;
+  final Profile peer;
 
   @override
   ConsumerState<VoiceNoteBubble> createState() => _VoiceNoteBubbleState();
@@ -277,107 +314,154 @@ class VoiceNoteBubble extends ConsumerStatefulWidget {
 
 class _VoiceNoteBubbleState extends ConsumerState<VoiceNoteBubble> {
   final AudioPlayer _player = AudioPlayer();
-  bool _loading = false;
+  File? _temp;
+  bool _busy = false;
   bool _playing = false;
-  String? _path;
-  Duration _duration = Duration.zero;
   Duration _position = Duration.zero;
+  Duration _duration = Duration.zero;
 
   @override
   void initState() {
     super.initState();
-    _player.onDurationChanged
-        .listen((d) => setState(() => _duration = d));
-    _player.onPositionChanged
-        .listen((p) => setState(() => _position = p));
-    _player.onPlayerComplete.listen((_) => setState(() {
+    _player.onPositionChanged.listen((p) {
+      if (mounted) setState(() => _position = p);
+    });
+    _player.onDurationChanged.listen((d) {
+      if (mounted) setState(() => _duration = d);
+    });
+    _player.onPlayerComplete.listen((_) {
+      if (mounted) {
+        setState(() {
           _playing = false;
           _position = Duration.zero;
-        }));
+        });
+      }
+    });
   }
 
   @override
   void dispose() {
     _player.dispose();
+    final t = _temp;
+    if (t != null) {
+      t.exists().then((e) {
+        if (e) t.delete().catchError((_) => t);
+      }).catchError((_) {});
+    }
     super.dispose();
   }
 
+  static String _fmt(Duration d) {
+    final s = d.inSeconds.remainder(60).toString().padLeft(2, '0');
+    return '${d.inMinutes}:$s';
+  }
+
   Future<void> _toggle() async {
+    if (_busy) return;
     if (_playing) {
       await _player.pause();
-      setState(() => _playing = false);
+      if (mounted) setState(() => _playing = false);
       return;
     }
-    if (_path == null) {
-      setState(() => _loading = true);
-      try {
-        final session = await ref.read(appSessionProvider.future);
-        if (session == null) return;
-        final bytes = await ref.read(chatServiceProvider).openAttachment(
-              message: widget.message,
-              session: session,
-              peer: widget.peer,
-              groupKey: widget.groupKey,
-            );
-        _path = await ref
-            .read(fileServiceProvider)
-            .writeTempFile('voice_${widget.message.id}.m4a', bytes);
-      } catch (_) {
+    if (_temp != null && await _temp!.exists()) {
+      await _player.resume();
+      if (mounted) setState(() => _playing = true);
+      return;
+    }
+
+    final session = await ref.read(appSessionProvider.future);
+    if (session == null) return;
+    setState(() => _busy = true);
+    try {
+      // Voice notes stay replayable for the owner of the chat, so we decrypt
+      // WITHOUT destroying the ciphertext.
+      final Uint8List? bytes =
+          await ref.read(chatServiceProvider).openViewOnceAttachment(
+                message: widget.message,
+                identity: session.identity,
+                peer: widget.peer,
+                destroy: false,
+              );
+      if (bytes == null) {
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('Could not play the voice note')),
+            const SnackBar(content: Text('Voice note is no longer available')),
           );
         }
         return;
-      } finally {
-        if (mounted) setState(() => _loading = false);
       }
+      _temp = await FileService().writeTempFile(bytes, 'voice_note.m4a');
+      await _player.play(DeviceFileSource(_temp!.path));
+      if (mounted) setState(() => _playing = true);
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Could not play voice note: $e')),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _busy = false);
     }
-    await _player.play(DeviceFileSource(_path!));
-    setState(() => _playing = true);
   }
 
   @override
   Widget build(BuildContext context) {
-    final progress = _duration.inMilliseconds == 0
+    final mine = widget.message.isMine;
+    final fg = mine ? Colors.black : NyvoxTheme.textPrimary;
+    final sub = mine ? Colors.black54 : NyvoxTheme.textSecondary;
+    final progress = (_duration.inMilliseconds == 0)
         ? 0.0
-        : _position.inMilliseconds / _duration.inMilliseconds;
-    return Container(
-      width: 230,
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
-      decoration: BoxDecoration(
-        borderRadius: BorderRadius.circular(20),
-      ),
+        : (_position.inMilliseconds / _duration.inMilliseconds).clamp(0.0, 1.0);
+
+    return _AttachmentShell(
+      isMine: mine,
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          IconButton(
-            onPressed: _loading ? null : _toggle,
-            icon: _loading
-                ? const SizedBox(
-                    width: 22,
-                    height: 22,
-                    child: CircularProgressIndicator(strokeWidth: 2),
-                  )
-                : Icon(_playing ? Icons.pause : Icons.play_arrow),
-            color: widget.isMine ? Colors.black : NyvoxTheme.accent,
-          ),
-          Expanded(
-            child: LinearProgressIndicator(
-              value: progress.clamp(0.0, 1.0),
-              backgroundColor: widget.isMine
-                  ? Colors.black26
-                  : NyvoxTheme.accent.withValues(alpha: 0.2),
-              color: widget.isMine ? Colors.black : NyvoxTheme.accent,
-              minHeight: 3,
+          InkWell(
+            onTap: _toggle,
+            customBorder: const CircleBorder(),
+            child: Padding(
+              padding: const EdgeInsets.all(4),
+              child: _busy
+                  ? const SizedBox(
+                      height: 22,
+                      width: 22,
+                      child: CircularProgressIndicator(strokeWidth: 2))
+                  : Icon(_playing ? Icons.pause_circle : Icons.play_circle,
+                      size: 30, color: fg),
             ),
           ),
           const SizedBox(width: 8),
-          Text(
-            _fmtDur(_position > Duration.zero ? _position : _duration),
-            style: TextStyle(
-              fontSize: 11,
-              color: widget.isMine ? Colors.black87 : NyvoxTheme.textSecondary,
+          SizedBox(
+            width: 130,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                ClipRRect(
+                  borderRadius: BorderRadius.circular(3),
+                  child: LinearProgressIndicator(
+                    value: progress,
+                    minHeight: 4,
+                    backgroundColor: sub.withValues(alpha: 0.3),
+                    valueColor: AlwaysStoppedAnimation(fg),
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Icon(Icons.mic, size: 11, color: sub),
+                    Text(
+                      _duration == Duration.zero
+                          ? 'Voice note'
+                          : '${_fmt(_position)} / ${_fmt(_duration)}',
+                      style: TextStyle(fontSize: 10, color: sub),
+                    ),
+                  ],
+                ),
+              ],
             ),
           ),
         ],
