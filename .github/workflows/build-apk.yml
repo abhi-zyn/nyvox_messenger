@@ -20,6 +20,9 @@ jobs:
           channel: stable
           cache: true
 
+      - name: Generate Android scaffold
+        run: flutter create --org com.nyvox --platforms android .
+
       - name: Restore Nyvox logo
         run: |
           mkdir -p assets
@@ -29,7 +32,8 @@ jobs:
 
       - name: Enable screenshot and screen-recording protection
         run: |
-          MAIN_ACTIVITY=android/app/src/main/kotlin/com/nyvox/app/MainActivity.kt
+          MAIN_ACTIVITY=$(find android/app/src/main/kotlin -name MainActivity.kt | head -n 1)
+          echo "MainActivity: $MAIN_ACTIVITY"
           sed -i 's|import io.flutter.embedding.android.FlutterActivity|import io.flutter.embedding.android.FlutterActivity\nimport android.os.Bundle\nimport android.view.WindowManager|' "$MAIN_ACTIVITY"
           sed -i 's|^}$|    override fun onCreate(savedInstanceState: Bundle?) {\n        super.onCreate(savedInstanceState)\n        window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)\n    }\n}|' "$MAIN_ACTIVITY"
           cat "$MAIN_ACTIVITY"
