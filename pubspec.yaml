@@ -1,62 +1,52 @@
 name: nyvox
-description: A privacy-first, end-to-end encrypted messenger built with Flutter and Supabase.
+description: Nyvox — end-to-end encrypted, anonymous messaging.
 publish_to: 'none'
 version: 0.1.0+1
 
 environment:
-  sdk: '>=3.3.0 <4.0.0'
-
-dependencies:
-  flutter:
-    sdk: flutter
-
-  # Backend
-  supabase_flutter: ^2.8.0
-
-  # State management
-  flutter_riverpod: ^2.5.1
-
-  # Crypto: X25519 key exchange + AES-GCM authenticated encryption
-  cryptography: ^2.7.0
-  bip39: ^1.0.6            # recovery phrase (mnemonic) generation
-  convert: ^3.1.1          # hex encode/decode
-
-  # Secure on-device key storage (Keychain / EncryptedSharedPreferences)
-  flutter_secure_storage: ^9.2.2
-  shared_preferences: ^2.3.2
-
-  # Contact sharing
-  qr_flutter: ^4.1.0
-  mobile_scanner: ^5.1.1
-  image_picker: ^1.1.2     # pick images from gallery
-  share_plus: ^11.0.0      # share Account ID as custom text
-  image: ^4.2.0            # on-device image compression (avatars, chat photos)
-
-  # UI helpers
-  intl: ^0.19.0
-  timeago: ^3.7.0
-
-  # Local notifications (privacy-safe: never contains message content)
-  flutter_local_notifications: ^18.0.1
-
-dev_dependencies:
-  flutter_test:
-    sdk: flutter
-  flutter_lints: ^4.0.0
-  flutter_launcher_icons: ^0.14.1
+  sdk: ^3.8.0
 
 flutter:
   uses-material-design: true
   assets:
-    - assets/nyvox_logo.png
+    - assets/logo.png
 
-# Generated in CI by `dart run flutter_launcher_icons` (see workflow).
-# The source PNG is stored as base64 parts and reassembled by CI.
-# Android only — CI generates just the android/ scaffold, so enabling iOS
-# here crashes the generator (no ios/ folder exists).
+dependencies:
+  flutter:
+    sdk: flutter
+  flutter_riverpod: ^2.6.1
+  supabase_flutter: ^2.8.4
+  cryptography: ^2.7.0
+  bip39: ^1.0.6
+  hex: ^0.2.0
+  flutter_secure_storage: ^9.2.4
+  shared_preferences: ^2.3.5
+  qr_flutter: ^4.1.0
+  mobile_scanner: ^5.2.3
+  image: ^4.5.2
+  crypto: ^3.0.6
+  uuid: ^4.5.1
+  intl: ^0.20.2
+  image_picker: ^1.1.2
+  share_plus: ^11.0.0
+  flutter_local_notifications: ^19.0.0
+  file_picker: ^8.1.2
+  record: ^6.0.0
+  audioplayers: ^6.1.0
+  open_filex: ^4.6.0
+  app_links: ^6.3.3
+  path_provider: ^2.1.4
+  cupertino_icons: ^1.0.8
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^5.0.0
+  flutter_launcher_icons: ^0.14.3
+
 flutter_launcher_icons:
   android: true
   ios: false
-  image_path: "assets/nyvox_logo.png"
-  adaptive_icon_background: "#000000"
-  adaptive_icon_foreground: "assets/nyvox_logo.png"
+  image_path: 'assets/logo.png'
+  adaptive_icon_background: '#0B0E11'
+  adaptive_icon_foreground: 'assets/logo.png'

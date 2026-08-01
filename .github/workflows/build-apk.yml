@@ -1,45 +1,39 @@
 name: Build Android APK
 
-# Runs on every push to main, and manually via Actions → "Build Android APK" → Run workflow.
 on:
   push:
     branches: [main]
   workflow_dispatch:
 
 jobs:
-  build-apk:
+  build:
     runs-on: ubuntu-latest
+    timeout-minutes: 40
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up Flutter
+      - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
           channel: stable
           cache: true
 
-      # The repo only contains lib/ + pubspec.yaml; this generates the
-      # android/ platform scaffold needed to build (does not touch lib/).
-      - name: Generate Android platform files
-        run: flutter create . --platforms=android --project-name=nyvox
+      - name: Restore Nyvox logo
+        run: |
+          mkdir -p assets
+          cat assets/logo_parts/part_* > assets/logo.b64
+          base64 -d assets/logo.b64 > assets/logo.png
+          file assets/logo.png
 
-      # The logo PNG is stored as base64 parts (the API used to push this repo
-      # is text-only); reassemble and decode it before use.
-      - name: Decode app logo asset
-        run: cat assets/logo_parts/part_* | base64 -di > assets/nyvox_logo.png
+      - name: Enable screenshot and screen-recording protection
+        run: |
+          MAIN_ACTIVITY=android/app/src/main/kotlin/com/nyvox/app/MainActivity.kt
+          sed -i 's|import io.flutter.embedding.android.FlutterActivity|import io.flutter.embedding.android.FlutterActivity\nimport android.os.Bundle\nimport android.view.WindowManager|' "$MAIN_ACTIVITY"
+          sed -i 's|^}$|    override fun onCreate(savedInstanceState: Bundle?) {\n        super.onCreate(savedInstanceState)\n        window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)\n    }\n}|' "$MAIN_ACTIVITY"
+          cat "$MAIN_ACTIVITY"
 
-      - name: Install dependencies
-        run: flutter pub get
-
-      - name: Generate launcher icons from the logo
-        run: dart run flutter_launcher_icons
-
-      # flutter_local_notifications requires core library desugaring — inject
-      # the flag into compileOptions and append a dependencies block (the
-      # generated build.gradle.kts has no dependencies block to match, so we
-      # append rather than sed-match).
       - name: Enable core library desugaring
         run: |
           GRADLE=android/app/build.gradle.kts
@@ -47,29 +41,22 @@ jobs:
           printf '\ndependencies {\n    coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.4")\n}\n' >> "$GRADLE"
           cat "$GRADLE"
 
-      # Block screenshots & screen recording (and app-switcher previews).
-      - name: Enable FLAG_SECURE (no screenshots)
+      - name: Add Android permissions and deep link
         run: |
-          MAIN=android/app/src/main/kotlin/com/example/nyvox/MainActivity.kt
-          sed -i 's|import io.flutter.embedding.android.FlutterActivity|import android.os.Bundle\nimport android.view.WindowManager\nimport io.flutter.embedding.android.FlutterActivity|' "$MAIN"
-          sed -i 's|class MainActivity : FlutterActivity()|class MainActivity : FlutterActivity() {\n    override fun onCreate(savedInstanceState: Bundle?) {\n        super.onCreate(savedInstanceState)\n        window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)\n    }\n}|' "$MAIN"
-          cat "$MAIN"
+          MANIFEST=android/app/src/main/AndroidManifest.xml
+          sed -i 's|<manifest xmlns:android="http://schemas.android.com/apk/res/android">|<manifest xmlns:android="http://schemas.android.com/apk/res/android">\n    <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>\n    <uses-permission android:name="android.permission.RECORD_AUDIO"/>|' "$MANIFEST"
+          sed -i 's|</activity>|            <intent-filter>\n                <action android:name="android.intent.action.VIEW" />\n                <category android:name="android.intent.category.DEFAULT" />\n                <category android:name="android.intent.category.BROWSABLE" />\n                <data android:scheme="nyvox" android:host="u" />\n            </intent-filter>\n        </activity>|' "$MANIFEST"
+          cat "$MANIFEST"
 
-      # Allow posting notifications on Android 13+ (flutter create doesn't
-      # include it by default).
-      - name: Add notification permission
-        run: sed -i 's|    <application|    <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>\n    <application|' android/app/src/main/AndroidManifest.xml
+      - name: Generate launcher icons
+        run: dart run flutter_launcher_icons
 
-      # Never block the build on lint warnings.
-      - name: Analyze
-        run: flutter analyze --no-fatal-infos --no-fatal-warnings || true
-
-      # Supabase credentials are baked in at build time via --dart-define.
       - name: Build release APK
         run: |
+          flutter pub get
           flutter build apk --release \
-            --dart-define=SUPABASE_URL="https://vodttlhalrzqpsmowpaz.supabase.co" \
-            --dart-define=SUPABASE_ANON_KEY="sb_publishable_YSWHXWMFdnFjbqoXBnfoyQ_i041nuvP"
+            --dart-define=SUPABASE_URL=${{ secrets.SUPABASE_URL }} \
+            --dart-define=SUPABASE_ANON_KEY=${{ secrets.SUPABASE_ANON_KEY }}
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
