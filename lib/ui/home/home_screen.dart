@@ -25,7 +25,6 @@ class HomeScreen extends ConsumerStatefulWidget {
 
 class _HomeScreenState extends ConsumerState<HomeScreen> {
   bool _initialized = false;
-  bool _locked = false;
   AppLinks? _appLinks;
   StreamSubscription<Uri>? _linkSub;
   final Set<String> _seenMessageIds = {};
@@ -63,8 +62,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     final chat = ref.read(chatServiceProvider);
     final peer = await chat.lookupProfile(accountId);
     if (peer == null || !mounted) return;
-    final convoId =
-        await chat.getOrCreateDm(widget.session.profile.accountId, peer.accountId);
+    final convoId = await chat.getOrCreateDm(
+        widget.session.profile.accountId, peer.accountId);
     if (!mounted) return;
     await Navigator.of(context).push(MaterialPageRoute(
       builder: (_) => ChatScreen(
@@ -90,6 +89,15 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
       ),
     ));
     ref.invalidate(conversationsProvider);
+  }
+
+  String _extractId(String input) {
+    if (input.startsWith('nyvox://u/')) {
+      return input.substring('nyvox://u/'.length).split('?').first;
+    }
+    final idx = input.indexOf('/u/');
+    if (idx != -1) return input.substring(idx + 3).split('?').first;
+    return input;
   }
 
   Future<void> _openNewGroup() async {
@@ -160,15 +168,6 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     ));
   }
 
-  String _extractId(String input) {
-    if (input.startsWith('nyvox://u/')) {
-      return input.substring('nyvox://u/'.length).split('?').first;
-    }
-    final idx = input.indexOf('/u/');
-    if (idx != -1) return input.substring(idx + 3).split('?').first;
-    return input;
-  }
-
   void _openFab() {
     showModalBottomSheet(
       context: context,
@@ -196,6 +195,17 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
         ),
       ),
     );
+  }
+
+  Future<Profile?> _resolvePeer(String conversationId) async {
+    final members = await ref
+        .read(chatServiceProvider)
+        .listMembersWithProfiles(conversationId);
+    final myId = widget.session.profile.accountId;
+    for (final p in members) {
+      if (p.accountId != myId) return p;
+    }
+    return null;
   }
 
   @override
@@ -294,11 +304,6 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                         ),
                       ));
                     } else {
-                      final chat = ref.read(chatServiceProvider);
-                      final members = await ref.read(
-                          groupContextProvider(c.id).future.then((_) => null),
-                        );
-                      // DMs: resolve the peer profile via the service.
                       final peer = await _resolvePeer(c.id);
                       if (!mounted || peer == null) return;
                       await Navigator.of(context).push(MaterialPageRoute(
@@ -320,16 +325,6 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
       ),
     );
   }
-
-  Future<Profile?> _resolvePeer(String conversationId) async {
-    final members =
-        await ref.read(chatServiceProvider).listMembersWithProfiles(conversationId);
-    final myId = widget.session.profile.accountId;
-    for (final p in members) {
-      if (p.accountId != myId) return p;
-    }
-    return null;
-  }
 }
 
 class _ConversationTile extends StatelessWidget {
@@ -347,8 +342,9 @@ class _ConversationTile extends StatelessWidget {
     if (t == null) return '';
     final local = t.toLocal();
     final now = DateTime.now();
-    final sameDay =
-        local.year == now.year && local.month == now.month && local.day == now.day;
+    final sameDay = local.year == now.year &&
+        local.month == now.month &&
+        local.day == now.day;
     if (sameDay) {
       return '${local.hour.toString().padLeft(2, '0')}:${local.minute.toString().padLeft(2, '0')}';
     }
@@ -364,7 +360,8 @@ class _ConversationTile extends StatelessWidget {
               backgroundColor: NyvoxTheme.accent.withValues(alpha: 0.15),
               child: const Icon(Icons.groups, color: NyvoxTheme.accent),
             )
-          : UserAvatar(avatarUrl: null, fallbackText: summary.title, radius: 24),
+          : UserAvatar(
+              avatarUrl: null, fallbackText: summary.title, radius: 24),
       title: Text(summary.title),
       subtitle: Text(
         summary.isGroup ? 'Group chat' : 'Tap to chat',
