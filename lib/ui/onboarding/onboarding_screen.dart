@@ -70,9 +70,12 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
 
   @override
   Widget build(BuildContext context) {
+    // Scrollable so the action button is ALWAYS reachable — on smaller
+    // screens (or with the keyboard open) a fixed Column pushed the button
+    // off-screen, making it seem unclickable.
     return Scaffold(
       body: SafeArea(
-        child: Padding(
+        child: SingleChildScrollView(
           padding: const EdgeInsets.all(24),
           child: switch (_step) {
             _Step.welcome => _welcome(),
@@ -89,7 +92,7 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        const Spacer(),
+        const SizedBox(height: 48),
         const Text('🕶️', style: TextStyle(fontSize: 56)),
         const SizedBox(height: 16),
         const Text(
@@ -100,7 +103,7 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
         const _FeatureRow(icon: Icons.key, text: 'No phone number or email — your Account ID is your identity'),
         const _FeatureRow(icon: Icons.lock, text: 'End-to-end encrypted on your device (X25519 + AES-GCM)'),
         const _FeatureRow(icon: Icons.timer, text: 'Disappearing messages, on by design'),
-        const Spacer(),
+        const SizedBox(height: 40),
         FilledButton(
           onPressed: () => setState(() => _step = _Step.create),
           child: const Text('Create account'),
@@ -142,7 +145,7 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
           const SizedBox(height: 12),
           Text(_error!, style: const TextStyle(color: Colors.redAccent)),
         ],
-        const Spacer(),
+        const SizedBox(height: 32),
         FilledButton(
           onPressed: _busy ? null : _create,
           child: _busy
@@ -198,7 +201,7 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
             },
           ),
         ),
-        const Spacer(),
+        const SizedBox(height: 32),
         FilledButton(
           onPressed: _finish,
           child: const Text("I've saved it — continue"),
@@ -236,7 +239,7 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
           const SizedBox(height: 12),
           Text(_error!, style: const TextStyle(color: Colors.redAccent)),
         ],
-        const Spacer(),
+        const SizedBox(height: 32),
         FilledButton(
           onPressed: _busy ? null : _restore,
           child: _busy
