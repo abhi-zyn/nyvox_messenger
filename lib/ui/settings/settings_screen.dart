@@ -490,7 +490,7 @@ class _QrCard extends StatelessWidget {
               size: 190,
               backgroundColor: Colors.white,
               errorCorrectionLevel: QrErrorCorrectLevel.H,
-              embeddedImage: const AssetImage('assets/nyvox_logo.png'),
+              embeddedImage: const AssetImage('assets/logo.png'),
               embeddedImageStyle: const QrEmbeddedImageStyle(
                 size: Size(46, 46),
               ),
