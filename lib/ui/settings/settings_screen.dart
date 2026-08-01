@@ -1,55 +1,123 @@
-import 'dart:io';
-import 'dart:typed_data';
 import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:image_picker/image_picker.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 import 'package:share_plus/share_plus.dart';
 
-import '../../services/supabase_client.dart';
-import '../../state/app_session.dart';
+import '../../models/models.dart';
+import '../../services/profile_service.dart';
 import '../../state/providers.dart';
 import '../theme.dart';
-import 'qr_scan_screen.dart';
+
+/// One-click invite links resolve through the `u` edge function, which
+/// redirects into the app using the nyvox:// deep-link scheme.
+const String kInviteBase =
+    'https://vodttlhalrzqpsmowpaz.supabase.co/functions/v1/u';
+
+String inviteUrlFor(String accountId) => '$kInviteBase/$accountId';
 
 class SettingsScreen extends ConsumerStatefulWidget {
-  const SettingsScreen({super.key, required this.session});
-
-  final AppSession session;
+  const SettingsScreen({super.key});
 
   @override
   ConsumerState<SettingsScreen> createState() => _SettingsScreenState();
 }
 
 class _SettingsScreenState extends ConsumerState<SettingsScreen> {
-  bool _busy = false;
-  final _qrKey = GlobalKey();
-  String? _avatarUrl;
+  /// Wraps the QR card so it can be rasterised and shared as a PNG.
+  final GlobalKey _qrKey = GlobalKey();
+
+  Profile? _me;
+  bool _uploadingPhoto = false;
+  bool _sharingQr = false;
 
   @override
   void initState() {
     super.initState();
-    _avatarUrl = widget.session.profile.avatarUrl;
+    _loadProfile();
   }
 
-  /// One-click invite: opens Nyvox directly (deep link) with a manual
-  /// Account-ID fallback for people who don't have the app yet.
-  String get _inviteUrl =>
-      '$kSupabaseUrl/functions/v1/u/${widget.session.profile.accountId}';
-
-  Future<void> _changePhoto() async {
-    setState(() => _busy = true);
+  Future<void> _loadProfile() async {
+    final session = await ref.read(appSessionProvider.future);
+    if (session == null) return;
     try {
-      final bytes = await ref
-          .read(avatarServiceProvider)
-          .pickAndCompress(maxSide: 512, quality: 70);
-      if (bytes == null) return;
-      final url = await ref.read(avatarServiceProvider).uploadAvatar(
-          widget.session.profile.accountId, bytes);
-      setState(() => _avatarUrl = url);
+      final me =
+          await ref.read(chatServiceProvider).lookupAccount(session.accountId);
+      if (mounted) setState(() => _me = me);
+    } catch (_) {}
+  }
+
+  // ------------------------------------------------------------ display name
+  Future<void> _changeName() async {
+    final session = await ref.read(appSessionProvider.future);
+    if (session == null) return;
+    final controller = TextEditingController(text: _me?.displayName ?? '');
+
+    final name = await showDialog<String>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Change display name'),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          maxLength: 40,
+          decoration: const InputDecoration(hintText: 'Your name'),
+          onSubmitted: (v) => Navigator.pop(context, v),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(context, controller.text),
+            child: const Text('Save'),
+          ),
+        ],
+      ),
+    );
+
+    if (name == null || name.trim().isEmpty) return;
+    try {
+      await ref
+          .read(authServiceProvider)
+          .updateDisplayName(session.accountId, name);
+      await _loadProfile();
+      ref.invalidate(conversationsProvider);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Display name updated')),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Could not update name: $e')),
+        );
+      }
+    }
+  }
+
+  // ----------------------------------------------------------- profile photo
+  Future<void> _changePhoto() async {
+    final session = await ref.read(appSessionProvider.future);
+    if (session == null || _uploadingPhoto) return;
+    try {
+      final picked = await ImagePicker().pickImage(
+        source: ImageSource.gallery,
+        maxWidth: 1024,
+        imageQuality: 85,
+      );
+      if (picked == null) return;
+      setState(() => _uploadingPhoto = true);
+      final bytes = await picked.readAsBytes();
+      final compressed = ProfileService().compressAvatar(bytes);
+      await ProfileService().uploadAvatar(session.accountId, compressed);
+      await _loadProfile();
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('Profile photo updated')),
@@ -62,384 +130,401 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
         );
       }
     } finally {
-      if (mounted) setState(() => _busy = false);
+      if (mounted) setState(() => _uploadingPhoto = false);
     }
   }
 
-  Future<void> _changeName() async {
-    final controller = TextEditingController(
-        text: widget.session.profile.displayName);
-    final name = await showDialog<String>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Change display name'),
-        content: TextField(
-          controller: controller,
-          maxLength: 32,
-          autofocus: true,
-          decoration: const InputDecoration(hintText: 'Display name'),
-        ),
-        actions: [
-          TextButton(
-              onPressed: () => Navigator.pop(ctx),
-              child: const Text('Cancel')),
-          TextButton(
-              onPressed: () => Navigator.pop(ctx, controller.text.trim()),
-              child: const Text('Save')),
-        ],
-      ),
-    );
-    if (name == null ||
-        name.isEmpty ||
-        name == widget.session.profile.displayName) {
-      return;
-    }
-    await ref
-        .read(authServiceProvider)
-        .updateDisplayName(widget.session.profile.accountId, name);
-    ref.invalidate(appSessionProvider);
-    if (mounted) {
-      ScaffoldMessenger.of(context)
-          .showSnackBar(const SnackBar(content: Text('Display name updated')));
-    }
+  // ----------------------------------------------------------------- sharing
+  String _inviteText(String accountId) {
+    final name = _me?.displayName ?? 'A Nyvox user';
+    return '🕶️ $name invited you to chat privately on Nyvox — end-to-end '
+        'encrypted, no phone number needed.\n\n'
+        'Tap to start chatting:\n${inviteUrlFor(accountId)}\n\n'
+        'Or add me manually with this Account ID:\n$accountId';
   }
 
-  void _showRecoveryPhrase() {
-    showDialog(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Recovery phrase'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const Text(
-              'Anyone with these 12 words can take over your account. Never share them.',
-              style: TextStyle(color: NyvoxTheme.textSecondary, fontSize: 13),
-            ),
-            const SizedBox(height: 12),
-            SelectableText(
-              widget.session.identity.mnemonic,
-              style: const TextStyle(fontFamily: 'monospace', height: 1.6),
-            ),
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () {
-              Clipboard.setData(
-                  ClipboardData(text: widget.session.identity.mnemonic));
-              ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(content: Text('Copied')),
-              );
-            },
-            child: const Text('Copy'),
-          ),
-          TextButton(
-            onPressed: () => Navigator.pop(ctx),
-            child: const Text('Close'),
-          ),
-        ],
-      ),
-    );
+  void _shareInvite(String accountId) {
+    Share.share(_inviteText(accountId));
   }
 
-  Future<void> _deleteAccount() async {
-    final confirm = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Delete account?'),
-        content: const Text(
-          'This permanently deletes your profile, memberships and messages from the server. If you have your recovery phrase, you can restore the account later.',
-        ),
-        actions: [
-          TextButton(
-              onPressed: () => Navigator.pop(ctx, false),
-              child: const Text('Cancel')),
-          TextButton(
-            onPressed: () => Navigator.pop(ctx, true),
-            child: const Text('Delete forever',
-                style: TextStyle(color: Colors.redAccent)),
-          ),
-        ],
-      ),
-    );
-    if (confirm != true) return;
-    setState(() => _busy = true);
+  /// Rasterise the branded QR card and share it as a real image.
+  Future<void> _shareQrImage(String accountId) async {
+    if (_sharingQr) return;
+    setState(() => _sharingQr = true);
     try {
-      await ref.read(authServiceProvider).deleteAccount();
-      ref.invalidate(appSessionProvider);
+      final boundary =
+          _qrKey.currentContext?.findRenderObject() as RenderRepaintBoundary?;
+      if (boundary == null) return;
+      final image = await boundary.toImage(pixelRatio: 3);
+      final byteData = await image.toByteData(format: ui.ImageByteFormat.png);
+      if (byteData == null) return;
+      final bytes = byteData.buffer.asUint8List();
+      final path = await ref
+          .read(fileServiceProvider)
+          .writeTempFile('nyvox-invite.png', bytes);
+      await Share.shareXFiles(
+        [XFile(path)],
+        text: _inviteText(accountId),
+      );
     } catch (e) {
-      setState(() => _busy = false);
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Delete failed: $e')),
+          SnackBar(content: Text('Could not share QR: $e')),
         );
       }
+    } finally {
+      if (mounted) setState(() => _sharingQr = false);
     }
   }
 
-  /// Renders the QR card to a PNG and shares it as an image.
-  Future<void> _shareQrImage() async {
-    try {
-      final boundary = _qrKey.currentContext!.findRenderObject()!
-          as RenderRepaintBoundary;
-      final image = await boundary.toImage(pixelRatio: 3);
-      final byteData =
-          await image.toByteData(format: ui.ImageByteFormat.png);
-      if (byteData == null) return;
-      final path = await ref.read(fileServiceProvider).writeTempFile(
-          'nyvox-invite.png', byteData.buffer.asUint8List());
-      await Share.shareXFiles([XFile(path)],
-          text: 'Chat with me on Nyvox — end-to-end encrypted:\n$_inviteUrl');
-    } catch (_) {}
-  }
+  // -------------------------------------------------------------------- wipe
+  Future<void> _wipe() async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Wipe this device?'),
+        content: const Text(
+          'Your identity will be removed from this device. You can only get it '
+          'back with your 12-word recovery phrase.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Wipe', style: TextStyle(color: Colors.redAccent)),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
 
-  Future<void> _scanQr() async {
-    final result = await Navigator.of(context).push<String?>(
-      MaterialPageRoute(builder: (_) => const QrScanScreen()),
-    );
-    if (result == null || result.isEmpty) return;
-    if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('Scanned: ${result.substring(0, result.length > 24 ? 24 : result.length)}…')),
-    );
+    await ref.read(authServiceProvider).signOutAndWipe();
+    ref.invalidate(appSessionProvider);
+    ref.invalidate(conversationsProvider);
+    if (mounted) {
+      Navigator.of(context).popUntil((route) => route.isFirst);
+    }
   }
 
   @override
   Widget build(BuildContext context) {
-    final profile = widget.session.profile;
+    final sessionAsync = ref.watch(appSessionProvider);
+
     return Scaffold(
       appBar: AppBar(title: const Text('Settings')),
-      body: ListView(
-        padding: const EdgeInsets.all(20),
-        children: [
-          Row(
+      body: sessionAsync.when(
+        loading: () => const Center(child: CircularProgressIndicator()),
+        error: (e, _) => Center(child: Text('$e')),
+        data: (session) {
+          if (session == null) {
+            return const Center(child: Text('No account on this device.'));
+          }
+          final identity = session.identity;
+          final accountId = identity.accountId;
+          final inviteUrl = inviteUrlFor(accountId);
+
+          return ListView(
+            padding: const EdgeInsets.all(20),
             children: [
-              UserAvatar(
-                  avatarUrl: _avatarUrl,
-                  fallbackText: profile.displayName,
-                  radius: 28),
-              const SizedBox(width: 16),
-              Expanded(
+              // ----------------------------------------------------- profile
+              const _SectionTitle('Profile'),
+              const SizedBox(height: 12),
+              Center(
                 child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Row(
+                    CircleAvatar(
+                      radius: 44,
+                      backgroundColor: NyvoxTheme.surfaceRaised,
+                      backgroundImage: _me?.avatarUrl != null
+                          ? NetworkImage(_me!.avatarUrl!)
+                          : null,
+                      child: _me?.avatarUrl == null
+                          ? Text(_me?.avatarEmoji ?? '🕶️',
+                              style: const TextStyle(fontSize: 36))
+                          : null,
+                    ),
+                    const SizedBox(height: 10),
+                    Text(
+                      _me?.displayName ?? 'Nyvox user',
+                      style: const TextStyle(
+                          fontSize: 18, fontWeight: FontWeight.w700),
+                    ),
+                    const SizedBox(height: 4),
+                    Wrap(
+                      alignment: WrapAlignment.center,
                       children: [
-                        Flexible(
-                          child: Text(profile.displayName,
-                              style: const TextStyle(
-                                  fontSize: 20, fontWeight: FontWeight.w700),
-                              overflow: TextOverflow.ellipsis),
+                        TextButton.icon(
+                          icon: _uploadingPhoto
+                              ? const SizedBox(
+                                  height: 16,
+                                  width: 16,
+                                  child:
+                                      CircularProgressIndicator(strokeWidth: 2))
+                              : const Icon(Icons.photo_camera_outlined,
+                                  size: 18),
+                          label: Text(
+                              _uploadingPhoto ? 'Uploading…' : 'Change photo'),
+                          onPressed: _uploadingPhoto ? null : _changePhoto,
                         ),
-                        IconButton(
-                          icon: const Icon(Icons.edit,
-                              size: 18, color: NyvoxTheme.accent),
+                        TextButton.icon(
+                          icon: const Icon(Icons.edit_outlined, size: 18),
+                          label: const Text('Change name'),
                           onPressed: _changeName,
-                          tooltip: 'Change display name',
                         ),
                       ],
                     ),
                   ],
                 ),
               ),
-            ],
-          ),
-          const SizedBox(height: 8),
-          ListTile(
-            contentPadding: EdgeInsets.zero,
-            leading: const Icon(Icons.photo_camera,
-                color: NyvoxTheme.accent),
-            title: const Text('Update profile photo'),
-            subtitle: const Text(
-                'Compressed on your phone before upload',
-                style: TextStyle(fontSize: 12)),
-            onTap: _busy ? null : _changePhoto,
-          ),
-          const SizedBox(height: 12),
-          const Text('Invite & QR',
-              style: TextStyle(color: NyvoxTheme.textSecondary)),
-          const SizedBox(height: 8),
-          RepaintBoundary(
-            key: _qrKey,
-            child: Container(
-              color: NyvoxTheme.bg,
-              padding: const EdgeInsets.all(8),
-              child: _QrCard(session: widget.session, inviteUrl: _inviteUrl),
-            ),
-          ),
-          const SizedBox(height: 12),
-          Row(
-            children: [
-              Expanded(
-                child: OutlinedButton.icon(
+              const Divider(height: 40),
+
+              // -------------------------------------------------- invite/QR
+              const _SectionTitle('Invite someone'),
+              const SizedBox(height: 8),
+              const Text(
+                'Share your link or QR — one tap opens a chat with you. Neither reveals anything about you.',
+                style: TextStyle(color: NyvoxTheme.textSecondary),
+              ),
+              const SizedBox(height: 16),
+              RepaintBoundary(
+                key: _qrKey,
+                child: _QrCard(
+                  data: inviteUrl,
+                  name: _me?.displayName ?? 'Nyvox user',
+                  emoji: _me?.avatarEmoji ?? '🕶️',
+                  avatarUrl: _me?.avatarUrl,
+                ),
+              ),
+              const SizedBox(height: 14),
+              Wrap(
+                alignment: WrapAlignment.center,
+                spacing: 4,
+                children: [
+                  TextButton.icon(
+                    icon: const Icon(Icons.link, size: 18),
+                    label: const Text('Copy link'),
+                    onPressed: () async {
+                      await Clipboard.setData(ClipboardData(text: inviteUrl));
+                      if (context.mounted) {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(content: Text('Invite link copied')),
+                        );
+                      }
+                    },
+                  ),
+                  TextButton.icon(
+                    icon: const Icon(Icons.share_outlined, size: 18),
+                    label: const Text('Share link'),
+                    onPressed: () => _shareInvite(accountId),
+                  ),
+                  TextButton.icon(
+                    icon: _sharingQr
+                        ? const SizedBox(
+                            height: 16,
+                            width: 16,
+                            child: CircularProgressIndicator(strokeWidth: 2))
+                        : const Icon(Icons.qr_code_2, size: 18),
+                    label: const Text('Share QR image'),
+                    onPressed: _sharingQr ? null : () => _shareQrImage(accountId),
+                  ),
+                ],
+              ),
+              const Divider(height: 40),
+
+              // -------------------------------------------------- account id
+              const _SectionTitle('Your Account ID'),
+              const SizedBox(height: 8),
+              SelectableText(
+                accountId,
+                textAlign: TextAlign.center,
+                style: const TextStyle(fontFamily: 'monospace', fontSize: 12),
+              ),
+              const SizedBox(height: 8),
+              Center(
+                child: TextButton.icon(
                   icon: const Icon(Icons.copy, size: 18),
-                  label: const Text('Copy link'),
-                  onPressed: () {
-                    Clipboard.setData(ClipboardData(text: _inviteUrl));
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(content: Text('Invite link copied')),
-                    );
+                  label: const Text('Copy ID'),
+                  onPressed: () async {
+                    await Clipboard.setData(ClipboardData(text: accountId));
+                    if (context.mounted) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(content: Text('Account ID copied')),
+                      );
+                    }
                   },
                 ),
               ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: FilledButton.tonalIcon(
-                  icon: const Icon(Icons.share, size: 18),
-                  label: const Text('Share QR image'),
-                  onPressed: _shareQrImage,
+              const Divider(height: 40),
+
+              // -------------------------------------------- recovery phrase
+              const _SectionTitle('Recovery phrase'),
+              const SizedBox(height: 8),
+              ListTile(
+                contentPadding: EdgeInsets.zero,
+                leading: const Icon(Icons.key_outlined),
+                title: const Text('Reveal recovery phrase'),
+                subtitle: const Text('The only way to restore your account'),
+                onTap: () => _showPhrase(context, identity.mnemonic),
+              ),
+              const Divider(height: 40),
+
+              // ------------------------------------------------- danger zone
+              const _SectionTitle('Danger zone'),
+              const SizedBox(height: 8),
+              ListTile(
+                contentPadding: EdgeInsets.zero,
+                leading: const Icon(Icons.delete_forever_outlined,
+                    color: Colors.redAccent),
+                title: const Text('Sign out & wipe this device',
+                    style: TextStyle(color: Colors.redAccent)),
+                subtitle: const Text('Removes your identity from this device'),
+                onTap: _wipe,
+              ),
+              const SizedBox(height: 40),
+              const Center(
+                child: Text(
+                  'Nyvox · send messages, not metadata',
+                  style:
+                      TextStyle(color: NyvoxTheme.textSecondary, fontSize: 12),
                 ),
               ),
             ],
-          ),
-          const SizedBox(height: 12),
-          Row(
-            children: [
-              Expanded(
-                child: FilledButton.tonalIcon(
-                  icon: const Icon(Icons.qr_code_scanner, size: 18),
-                  label: const Text('Scan QR'),
-                  onPressed: _scanQr,
-                ),
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: OutlinedButton.icon(
-                  icon: const Icon(Icons.ios_share, size: 18),
-                  label: const Text('Share link'),
-                  onPressed: () => Share.share(
-                    'Chat with me on Nyvox — end-to-end encrypted, no phone number needed.\nTap to open a chat with me: $_inviteUrl',
-                  ),
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 24),
-          const Divider(),
-          SwitchListTile(
-            contentPadding: EdgeInsets.zero,
-            secondary: const Icon(Icons.lock_outline,
-                color: NyvoxTheme.accent),
-            title: const Text('App lock'),
-            subtitle: const Text(
-              'Require device unlock (fingerprint / face) every time Nyvox opens',
-              style: TextStyle(fontSize: 12),
+          );
+        },
+      ),
+    );
+  }
+
+  void _showPhrase(BuildContext context, String mnemonic) {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Recovery phrase'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Text(
+              'Never share these words. Anyone with them controls your account.',
+              style: TextStyle(color: NyvoxTheme.textSecondary, fontSize: 13),
             ),
-            value: ref.watch(appLockProvider),
-            onChanged: (v) =>
-                ref.read(appLockProvider.notifier).state = v,
-          ),
-          const Divider(),
-          ListTile(
-            contentPadding: EdgeInsets.zero,
-            leading: const Icon(Icons.vpn_key, color: NyvoxTheme.accent),
-            title: const Text('Recovery phrase'),
-            subtitle: const Text('Show my 12 words'),
-            onTap: _showRecoveryPhrase,
-          ),
-          const Divider(),
-          ListTile(
-            contentPadding: EdgeInsets.zero,
-            leading: const Icon(Icons.delete_forever,
-                color: Colors.redAccent),
-            title: const Text('Delete account',
-                style: TextStyle(color: Colors.redAccent)),
-            subtitle: const Text(
-                'Erase your data from the server and this device'),
-            onTap: _busy ? null : _deleteAccount,
-          ),
-          if (_busy)
-            const Padding(
-              padding: EdgeInsets.all(16),
-              child: Center(child: CircularProgressIndicator()),
+            const SizedBox(height: 12),
+            SelectableText(
+              mnemonic,
+              textAlign: TextAlign.center,
+              style: const TextStyle(fontFamily: 'monospace', fontSize: 15),
             ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () async {
+              await Clipboard.setData(ClipboardData(text: mnemonic));
+            },
+            child: const Text('Copy'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Close'),
+          ),
         ],
       ),
     );
   }
 }
 
-/// Branded QR invite card: avatar + name + QR + Nyvox watermark.
+/// Branded invite card: avatar + name on top, the Nyvox logo watermarked in
+/// the centre of the code, tagline beneath. High error correction keeps the
+/// code scannable with the embedded logo. Rendered on an opaque background so
+/// it rasterises cleanly when shared as a PNG.
 class _QrCard extends StatelessWidget {
-  const _QrCard({required this.session, required this.inviteUrl});
+  const _QrCard({
+    required this.data,
+    required this.name,
+    required this.emoji,
+    this.avatarUrl,
+  });
 
-  final AppSession session;
-  final String inviteUrl;
+  final String data;
+  final String name;
+  final String emoji;
+  final String? avatarUrl;
 
   @override
   Widget build(BuildContext context) {
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(20),
-        child: Column(
-          children: [
-            UserAvatar(
-                avatarUrl: session.profile.avatarUrl,
-                fallbackText: session.profile.displayName,
-                radius: 26),
-            const SizedBox(height: 10),
-            Text(
-              session.profile.displayName,
-              style:
-                  const TextStyle(fontSize: 18, fontWeight: FontWeight.w700),
+    return Container(
+      decoration: BoxDecoration(
+        color: NyvoxTheme.surface,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: NyvoxTheme.border),
+      ),
+      padding: const EdgeInsets.symmetric(vertical: 20, horizontal: 16),
+      child: Column(
+        children: [
+          CircleAvatar(
+            radius: 24,
+            backgroundColor: NyvoxTheme.surfaceRaised,
+            backgroundImage: avatarUrl != null ? NetworkImage(avatarUrl!) : null,
+            child: avatarUrl == null
+                ? Text(emoji, style: const TextStyle(fontSize: 22))
+                : null,
+          ),
+          const SizedBox(height: 8),
+          Text(
+            name,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w700),
+          ),
+          const SizedBox(height: 16),
+          Container(
+            padding: const EdgeInsets.all(14),
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(16),
             ),
-            const SizedBox(height: 2),
-            const Text(
-              'Scan to chat on Nyvox',
-              style: TextStyle(
-                  color: NyvoxTheme.textSecondary, fontSize: 12),
-            ),
-            const SizedBox(height: 14),
-            Stack(
-              alignment: Alignment.center,
-              children: [
-                QrImageView(
-                  data: inviteUrl,
-                  version: QrVersions.auto,
-                  size: 220,
-                  errorCorrectionLevel: QrErrorCorrectLevel.H,
-                  backgroundColor: Colors.white,
-                  eyeStyle: const QrEyeStyle(
-                      eyeShape: QrEyeShape.square,
-                      color: Color(0xFF0B0E11)),
-                  dataModuleStyle: const QrDataModuleStyle(
-                      dataModuleShape: QrDataModuleShape.square,
-                      color: Color(0xFF0B0E11)),
-                ),
-                Container(
-                  width: 46,
-                  height: 46,
-                  decoration: BoxDecoration(
-                    color: NyvoxTheme.bg,
-                    borderRadius: BorderRadius.circular(12),
-                    border: Border.all(color: Colors.white, width: 3),
-                  ),
-                  alignment: Alignment.center,
-                  child: const Text(
-                    'N',
-                    style: TextStyle(
-                      color: NyvoxTheme.accent,
-                      fontSize: 24,
-                      fontWeight: FontWeight.w800,
-                    ),
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 12),
-            const Text(
-              'NYVOX · send messages, not metadata',
-              style: TextStyle(
-                color: NyvoxTheme.accent,
-                fontSize: 11,
-                fontWeight: FontWeight.w600,
-                letterSpacing: 1.6,
+            child: QrImageView(
+              data: data,
+              size: 190,
+              backgroundColor: Colors.white,
+              errorCorrectionLevel: QrErrorCorrectLevel.H,
+              embeddedImage: const AssetImage('assets/nyvox_logo.png'),
+              embeddedImageStyle: const QrEmbeddedImageStyle(
+                size: Size(46, 46),
               ),
             ),
-          ],
-        ),
+          ),
+          const SizedBox(height: 12),
+          const Text(
+            'NYVOX · send messages, not metadata',
+            style: TextStyle(
+              color: NyvoxTheme.textSecondary,
+              fontSize: 10,
+              letterSpacing: 1.6,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _SectionTitle extends StatelessWidget {
+  const _SectionTitle(this.text);
+
+  final String text;
+
+  @override
+  Widget build(BuildContext context) {
+    return Text(
+      text,
+      style: const TextStyle(
+        fontSize: 14,
+        fontWeight: FontWeight.w700,
+        color: NyvoxTheme.accent,
+        letterSpacing: 0.4,
       ),
     );
   }

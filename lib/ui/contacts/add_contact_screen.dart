@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
@@ -8,8 +9,27 @@ import '../../state/providers.dart';
 import '../chat/chat_screen.dart';
 import '../theme.dart';
 
-/// Start a chat by entering an Account ID ("vc…") or scanning a QR code —
-/// exactly how Session adds contacts, with no address-book upload.
+/// Pull the Account ID out of whatever the user pasted or scanned:
+/// a raw id, a `nyvox://u/<id>` deep link, or an
+/// `https://…/functions/v1/u/<id>` invite URL.
+String extractAccountId(String raw) {
+  final value = raw.trim();
+  if (value.isEmpty) return value;
+
+  final uri = Uri.tryParse(value);
+  if (uri != null && uri.hasScheme) {
+    final segments =
+        uri.pathSegments.where((s) => s.trim().isNotEmpty).toList();
+    if (segments.isNotEmpty) return segments.last.trim();
+    // nyvox://<id> with no path.
+    if (uri.host.isNotEmpty && uri.host != 'u') return uri.host;
+  }
+  return value;
+}
+
+/// Start a chat by entering an Account ID ("vc…"), pasting an invite link, or
+/// scanning a QR code — exactly how Session adds contacts, with no
+/// address-book upload.
 class AddContactScreen extends ConsumerStatefulWidget {
   const AddContactScreen({super.key});
 
@@ -30,10 +50,17 @@ class _AddContactScreenState extends ConsumerState<AddContactScreen> {
     super.dispose();
   }
 
-  Future<void> _lookup([String? rawId]) async {
-    final id = (rawId ?? _idController.text).trim();
+  Future<void> _pasteFromClipboard() async {
+    final data = await Clipboard.getData(Clipboard.kTextPlain);
+    final text = data?.text;
+    if (text == null || text.trim().isEmpty) return;
+    await _lookup(text);
+  }
+
+  Future<void> _lookup([String? rawInput]) async {
+    final id = extractAccountId(rawInput ?? _idController.text);
     if (id.isEmpty) return;
-    if (rawId != null) _idController.text = rawId;
+    if (_idController.text != id) _idController.text = id;
 
     setState(() {
       _searching = true;
@@ -69,9 +96,8 @@ class _AddContactScreenState extends ConsumerState<AddContactScreen> {
         ),
       );
     } catch (e) {
+      setState(() => _opening = false);
       setState(() => _error = 'Could not open chat: $e');
-    } finally {
-      if (mounted) setState(() => _opening = false);
     }
   }
 
@@ -90,16 +116,15 @@ class _AddContactScreenState extends ConsumerState<AddContactScreen> {
       appBar: AppBar(title: const Text('New conversation')),
       body: Padding(
         padding: const EdgeInsets.all(20),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
+        child: ListView(
           children: [
             const Text(
-              'Enter an Account ID',
+              'Enter an ID or invite link',
               style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700),
             ),
             const SizedBox(height: 8),
             const Text(
-              'Ask your contact to share their ID or QR code from Settings. Your address book is never uploaded.',
+              'Paste their Account ID or nyvox invite link, or scan their QR code from Settings. Your address book is never uploaded.',
               style: TextStyle(color: NyvoxTheme.textSecondary),
             ),
             const SizedBox(height: 20),
@@ -109,12 +134,20 @@ class _AddContactScreenState extends ConsumerState<AddContactScreen> {
                   child: TextField(
                     controller: _idController,
                     autocorrect: false,
-                    style: const TextStyle(fontFamily: 'monospace', fontSize: 13),
-                    decoration: const InputDecoration(hintText: 'vc…'),
+                    style:
+                        const TextStyle(fontFamily: 'monospace', fontSize: 13),
+                    decoration: const InputDecoration(
+                      hintText: 'vc… or invite link',
+                    ),
                     onSubmitted: (_) => _lookup(),
                   ),
                 ),
-                const SizedBox(width: 8),
+                const SizedBox(width: 4),
+                IconButton(
+                  tooltip: 'Paste',
+                  icon: const Icon(Icons.content_paste),
+                  onPressed: _pasteFromClipboard,
+                ),
                 IconButton(
                   tooltip: 'Scan QR code',
                   icon: const Icon(Icons.qr_code_scanner),
@@ -127,7 +160,9 @@ class _AddContactScreenState extends ConsumerState<AddContactScreen> {
               onPressed: _searching ? null : () => _lookup(),
               child: _searching
                   ? const SizedBox(
-                      height: 20, width: 20, child: CircularProgressIndicator(strokeWidth: 2))
+                      height: 20,
+                      width: 20,
+                      child: CircularProgressIndicator(strokeWidth: 2))
                   : const Text('Find account'),
             ),
             if (_error != null) ...[
@@ -158,7 +193,8 @@ class _AddContactScreenState extends ConsumerState<AddContactScreen> {
                     _found!.shortId,
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(fontFamily: 'monospace', fontSize: 11),
+                    style:
+                        const TextStyle(fontFamily: 'monospace', fontSize: 11),
                   ),
                   // Icon-sized button: the old text button got squeezed by the
                   // ListTile and wrapped to one letter per line.
@@ -262,9 +298,8 @@ class _QrScanScreenState extends State<_QrScanScreen> {
         errorBuilder: (context, error, child) => const _ScannerErrorView(),
         onDetect: (capture) {
           if (_handled) return;
-          final value = capture.barcodes.isEmpty
-              ? null
-              : capture.barcodes.first.rawValue;
+          final value =
+              capture.barcodes.isEmpty ? null : capture.barcodes.first.rawValue;
           if (value != null && value.isNotEmpty) {
             _handled = true;
             Navigator.of(context).pop(value);
