@@ -1,6 +1,3 @@
-import 'dart:io';
-import 'dart:typed_data';
-
 import 'package:audioplayers/audioplayers.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -11,7 +8,7 @@ import '../../services/file_service.dart';
 import '../../state/providers.dart';
 import '../theme.dart';
 
-/// Shared bubble chrome for every view-once attachment type.
+/// Shared bubble chrome for every attachment type.
 class _AttachmentShell extends StatelessWidget {
   const _AttachmentShell({required this.isMine, required this.child});
 
@@ -56,6 +53,7 @@ class ViewOnceTile extends ConsumerStatefulWidget {
 
 class _ViewOnceTileState extends ConsumerState<ViewOnceTile> {
   bool _busy = false;
+  bool _opened = false;
 
   Future<void> _open() async {
     if (_busy) return;
@@ -63,21 +61,16 @@ class _ViewOnceTileState extends ConsumerState<ViewOnceTile> {
     if (session == null) return;
     setState(() => _busy = true);
     try {
+      // ECDH is symmetric: whichever side we are on, the other party's public
+      // key derives the shared secret.
       final bytes = await ref.read(chatServiceProvider).openViewOnceAttachment(
             message: widget.message,
             identity: session.identity,
-            peer: widget.peer,
+            decryptWithPublicKeyHex: widget.peer.publicKey,
             destroy: !widget.message.isMine,
           );
-      if (bytes == null) {
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('This photo is no longer available')),
-          );
-        }
-        return;
-      }
       if (!mounted) return;
+      if (!widget.message.isMine) setState(() => _opened = true);
       await showDialog<void>(
         context: context,
         barrierColor: Colors.black,
@@ -110,8 +103,9 @@ class _ViewOnceTileState extends ConsumerState<ViewOnceTile> {
       );
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text('Could not open: $e')));
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('This photo is no longer available')),
+        );
       }
     } finally {
       if (mounted) setState(() => _busy = false);
@@ -121,12 +115,11 @@ class _ViewOnceTileState extends ConsumerState<ViewOnceTile> {
   @override
   Widget build(BuildContext context) {
     final mine = widget.message.isMine;
-    final opened = widget.message.viewedAt != null;
     final fg = mine ? Colors.black : NyvoxTheme.textPrimary;
     return _AttachmentShell(
       isMine: mine,
       child: InkWell(
-        onTap: opened && !mine ? null : _open,
+        onTap: _opened ? null : _open,
         child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
@@ -135,7 +128,7 @@ class _ViewOnceTileState extends ConsumerState<ViewOnceTile> {
                     height: 20,
                     width: 20,
                     child: CircularProgressIndicator(strokeWidth: 2))
-                : Icon(opened ? Icons.visibility_off : Icons.photo_camera,
+                : Icon(_opened ? Icons.visibility_off : Icons.photo_camera,
                     color: fg),
             const SizedBox(width: 10),
             Flexible(
@@ -144,12 +137,12 @@ class _ViewOnceTileState extends ConsumerState<ViewOnceTile> {
                 mainAxisSize: MainAxisSize.min,
                 children: [
                   Text(
-                    opened ? 'Photo opened' : 'View-once photo',
+                    _opened ? 'Photo opened' : 'View-once photo',
                     style: TextStyle(
                         color: fg, fontWeight: FontWeight.w600, fontSize: 14),
                   ),
                   Text(
-                    opened ? 'No longer available' : 'Tap to view once',
+                    _opened ? 'No longer available' : 'Tap to view once',
                     style: TextStyle(
                         color: mine ? Colors.black54 : NyvoxTheme.textSecondary,
                         fontSize: 11),
@@ -179,6 +172,7 @@ class ViewOnceFileTile extends ConsumerStatefulWidget {
 
 class _ViewOnceFileTileState extends ConsumerState<ViewOnceFileTile> {
   bool _busy = false;
+  bool _opened = false;
 
   static String _prettySize(int? bytes) {
     if (bytes == null || bytes <= 0) return '';
@@ -209,39 +203,32 @@ class _ViewOnceFileTileState extends ConsumerState<ViewOnceFileTile> {
     final session = await ref.read(appSessionProvider.future);
     if (session == null) return;
     setState(() => _busy = true);
-    File? temp;
+    String? tempPath;
     try {
       final bytes = await ref.read(chatServiceProvider).openViewOnceAttachment(
             message: widget.message,
             identity: session.identity,
-            peer: widget.peer,
+            decryptWithPublicKeyHex: widget.peer.publicKey,
             destroy: !widget.message.isMine,
           );
-      if (bytes == null) {
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('This file is no longer available')),
-          );
-        }
-        return;
-      }
-      temp = await FileService().writeTempFile(
-        bytes,
+      tempPath = await FileService().writeTempFile(
         widget.message.attachmentName ?? 'nyvox_file',
+        bytes,
       );
-      await OpenFilex.open(temp.path);
+      if (mounted && !widget.message.isMine) setState(() => _opened = true);
+      await OpenFilex.open(tempPath);
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text('Could not open file: $e')));
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('This file is no longer available')),
+        );
       }
     } finally {
       // Never leave plaintext lying around on disk.
-      if (temp != null) {
-        Future.delayed(const Duration(minutes: 2), () async {
-          try {
-            if (await temp!.exists()) await temp.delete();
-          } catch (_) {}
+      final path = tempPath;
+      if (path != null) {
+        Future.delayed(const Duration(minutes: 2), () {
+          FileService().deleteTempFile(path);
         });
       }
       if (mounted) setState(() => _busy = false);
@@ -252,7 +239,6 @@ class _ViewOnceFileTileState extends ConsumerState<ViewOnceFileTile> {
   Widget build(BuildContext context) {
     final m = widget.message;
     final mine = m.isMine;
-    final opened = m.viewedAt != null;
     final fg = mine ? Colors.black : NyvoxTheme.textPrimary;
     final sub = mine ? Colors.black54 : NyvoxTheme.textSecondary;
     final size = _prettySize(m.attachmentSize);
@@ -260,7 +246,7 @@ class _ViewOnceFileTileState extends ConsumerState<ViewOnceFileTile> {
     return _AttachmentShell(
       isMine: mine,
       child: InkWell(
-        onTap: opened && !mine ? null : _open,
+        onTap: _opened ? null : _open,
         child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
@@ -269,7 +255,7 @@ class _ViewOnceFileTileState extends ConsumerState<ViewOnceFileTile> {
                     height: 22,
                     width: 22,
                     child: CircularProgressIndicator(strokeWidth: 2))
-                : Icon(opened ? Icons.lock_outline : _iconFor(m.attachmentName),
+                : Icon(_opened ? Icons.lock_outline : _iconFor(m.attachmentName),
                     color: fg, size: 26),
             const SizedBox(width: 10),
             Flexible(
@@ -285,7 +271,7 @@ class _ViewOnceFileTileState extends ConsumerState<ViewOnceFileTile> {
                         color: fg, fontWeight: FontWeight.w600, fontSize: 14),
                   ),
                   Text(
-                    opened
+                    _opened
                         ? 'Opened \u2014 no longer available'
                         : [if (size.isNotEmpty) size, 'Tap to open once']
                             .join(' \u00b7 '),
@@ -314,7 +300,7 @@ class VoiceNoteBubble extends ConsumerStatefulWidget {
 
 class _VoiceNoteBubbleState extends ConsumerState<VoiceNoteBubble> {
   final AudioPlayer _player = AudioPlayer();
-  File? _temp;
+  String? _tempPath;
   bool _busy = false;
   bool _playing = false;
   Duration _position = Duration.zero;
@@ -342,12 +328,8 @@ class _VoiceNoteBubbleState extends ConsumerState<VoiceNoteBubble> {
   @override
   void dispose() {
     _player.dispose();
-    final t = _temp;
-    if (t != null) {
-      t.exists().then((e) {
-        if (e) t.delete().catchError((_) => t);
-      }).catchError((_) {});
-    }
+    final path = _tempPath;
+    if (path != null) FileService().deleteTempFile(path);
     super.dispose();
   }
 
@@ -363,7 +345,7 @@ class _VoiceNoteBubbleState extends ConsumerState<VoiceNoteBubble> {
       if (mounted) setState(() => _playing = false);
       return;
     }
-    if (_temp != null && await _temp!.exists()) {
+    if (_tempPath != null) {
       await _player.resume();
       if (mounted) setState(() => _playing = true);
       return;
@@ -373,25 +355,19 @@ class _VoiceNoteBubbleState extends ConsumerState<VoiceNoteBubble> {
     if (session == null) return;
     setState(() => _busy = true);
     try {
-      // Voice notes stay replayable for the owner of the chat, so we decrypt
-      // WITHOUT destroying the ciphertext.
-      final Uint8List? bytes =
-          await ref.read(chatServiceProvider).openViewOnceAttachment(
-                message: widget.message,
-                identity: session.identity,
-                peer: widget.peer,
-                destroy: false,
-              );
-      if (bytes == null) {
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('Voice note is no longer available')),
+      // Voice notes stay replayable, so decrypt WITHOUT destroying.
+      final bytes = await ref.read(chatServiceProvider).openViewOnceAttachment(
+            message: widget.message,
+            identity: session.identity,
+            decryptWithPublicKeyHex: widget.peer.publicKey,
+            destroy: false,
           );
-        }
-        return;
-      }
-      _temp = await FileService().writeTempFile(bytes, 'voice_note.m4a');
-      await _player.play(DeviceFileSource(_temp!.path));
+      final path = await FileService().writeTempFile(
+        'nyvox_voice_${widget.message.id}.m4a',
+        bytes,
+      );
+      _tempPath = path;
+      await _player.play(DeviceFileSource(path));
       if (mounted) setState(() => _playing = true);
     } catch (e) {
       if (mounted) {
