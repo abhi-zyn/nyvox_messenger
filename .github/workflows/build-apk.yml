@@ -50,31 +50,8 @@ jobs:
           APP_GRADLE=android/app/build.gradle.kts
           sed -i 's|compileSdk = flutter.compileSdkVersion|compileSdk = 36|' "$APP_GRADLE"
           grep -n 'compileSdk' "$APP_GRADLE"
-
           ROOT_GRADLE=android/build.gradle.kts
-          cat >> "$ROOT_GRADLE" <<'EOF'
-
-// file_picker (and some other plugins) pin an older compileSdk than their own
-// transitive dependencies require, which breaks checkReleaseAarMetadata.
-// Force every Android module in the build to compile against SDK 36.
-subprojects {
-    afterEvaluate {
-        val androidExtension = extensions.findByName("android")
-        if (androidExtension != null) {
-            try {
-                val method = androidExtension.javaClass.getMethod(
-                    "compileSdkVersion",
-                    Integer.TYPE
-                )
-                method.invoke(androidExtension, 36)
-                logger.lifecycle("Forced compileSdk 36 for module: " + project.name)
-            } catch (e: Exception) {
-                logger.lifecycle("Skipped compileSdk override for: " + project.name)
-            }
-        }
-    }
-}
-EOF
+          printf '\n// file_picker and some other plugins pin an older compileSdk than their\n// own transitive dependencies require, breaking checkReleaseAarMetadata.\n// Force every Android module in the build to compile against SDK 36.\nsubprojects {\n    afterEvaluate {\n        val androidExtension = extensions.findByName("android")\n        if (androidExtension != null) {\n            try {\n                val method = androidExtension.javaClass.getMethod("compileSdkVersion", Integer.TYPE)\n                method.invoke(androidExtension, 36)\n                logger.lifecycle("Forced compileSdk 36 for module: " + project.name)\n            } catch (e: Exception) {\n                logger.lifecycle("Skipped compileSdk override for: " + project.name)\n            }\n        }\n    }\n}\n' >> "$ROOT_GRADLE"
           cat "$ROOT_GRADLE"
 
       - name: Add Android permissions and deep link
