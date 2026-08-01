@@ -1,129 +1,170 @@
 import 'dart:convert';
-import 'dart:typed_data';
 
+import 'package:cryptography/cryptography.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
-import '../models/models.dart';
-import 'chat_media_service.dart';
+import '../data/models.dart';
+import '../state/app_session.dart';
 import 'crypto_service.dart';
+import 'supabase_client.dart';
 
-/// All backend chat operations. Plaintext never touches Supabase —
-/// messages are encrypted on-device before upload and decrypted after download.
+/// Messaging: end-to-end encrypted DMs and groups, view-once attachments
+/// (images + files), voice notes, synced disappearing timers, read receipts.
 class ChatService {
-  ChatService(this._crypto);
+  final _crypto = CryptoService();
+  SupabaseClient get _client => NyvoxSupabase.client;
 
-  final SupabaseClient _client = Supabase.instance.client;
-  final CryptoService _crypto;
-  final ChatMediaService _media = ChatMediaService();
+  // ------------------------- conversations -------------------------
 
-  // ---------------------------------------------------------------- Contacts
-
-  /// Find a user by their Account ID ("vc…"), like adding a Session ID.
-  Future<Profile?> lookupAccount(String accountId) async {
-    final res = await _client.rpc(
-      'lookup_profile_by_account_id',
-      params: {'p_account_id': accountId},
-    );
-    final rows = (res as List).cast<Map<String, dynamic>>();
-    if (rows.isEmpty) return null;
-    return Profile.fromJson(rows.first);
-  }
-
-  // ------------------------------------------------------------ Conversations
-
-  /// Open (or reuse) the 1-to-1 conversation with [peerAccountId].
-  Future<String> openDm(String peerAccountId) async {
-    final res = await _client.rpc(
-      'create_dm_conversation',
-      params: {'other_account_id': peerAccountId},
-    );
-    return res as String;
-  }
-
-  /// All conversations I'm in, newest activity first, with peer profile,
-  /// last message, and WhatsApp-style unread count for the list UI.
-  Future<List<ConversationSummary>> listConversations(String myAccountId) async {
-    final memberships = await _client
+  Stream<List<Map<String, dynamic>>> watchConversationRows(String accountId) {
+    return _client
         .from('conversation_members')
-        .select('conversation_id, conversations(id, is_group, title, created_at)')
-        .eq('account_id', myAccountId);
-
-    final summaries = <ConversationSummary>[];
-
-    for (final row in (memberships as List).cast<Map<String, dynamic>>()) {
-      final convo = row['conversations'] as Map<String, dynamic>;
-      final convoId = convo['id'] as String;
-      final isGroup = convo['is_group'] as bool;
-
-      Profile? peer;
-      if (!isGroup) {
-        final peerRow = await _client
-            .from('conversation_members')
-            .select('account_id, profiles(account_id, display_name, public_key, avatar_emoji, avatar_url)')
-            .eq('conversation_id', convoId)
-            .neq('account_id', myAccountId)
-            .maybeSingle();
-        if (peerRow != null) {
-          peer = Profile.fromJson(peerRow['profiles'] as Map<String, dynamic>);
-        }
-      }
-
-      final last = await _client
-          .from('messages')
-          .select()
-          .eq('conversation_id', convoId)
-          .order('created_at', ascending: false)
-          .limit(1)
-          .maybeSingle();
-
-      // Unread = incoming messages with no read receipt yet.
-      final unread = await _client
-          .from('messages')
-          .select('id')
-          .eq('conversation_id', convoId)
-          .neq('sender_account_id', myAccountId)
-          .isFilter('read_at', null);
-
-      summaries.add(
-        ConversationSummary(
-          id: convoId,
-          isGroup: isGroup,
-          title: convo['title'] as String?,
-          createdAt: DateTime.parse(convo['created_at'] as String).toLocal(),
-          peer: peer,
-          lastMessage: last == null
-              ? null
-              : ChatMessage.fromJson(
-                  last,
-                  myAccountId: myAccountId,
-                  plaintext: last['attachment_path'] != null
-                      ? '📷 Photo'
-                      : '🔒 encrypted message',
-                ),
-          unreadCount: (unread as List).length,
-        ),
-      );
-    }
-
-    summaries.sort((a, b) {
-      final at = a.lastMessage?.createdAt ?? a.createdAt;
-      final bt = b.lastMessage?.createdAt ?? b.createdAt;
-      return bt.compareTo(at);
-    });
-    return summaries;
+        .stream(primaryKey: ['conversation_id', 'account_id'])
+        .eq('account_id', accountId);
   }
 
-  // ---------------------------------------------------------------- Messages
+  Future<ConversationSummary?> loadConversationSummary(
+      String conversationId, String myAccountId) async {
+    final convo = await _client
+        .from('conversations')
+        .select('id, is_group, title')
+        .eq('id', conversationId)
+        .maybeSingle();
+    if (convo == null) return null;
+    String title = convo['title'] as String? ?? 'Chat';
+    if (!(convo['is_group'] as bool? ?? false)) {
+      final members = await _client
+          .from('conversation_members')
+          .select('account_id')
+          .eq('conversation_id', conversationId)
+          .neq('account_id', myAccountId)
+          .limit(1);
+      if (members.isNotEmpty) {
+        final profile = await _client
+            .from('profiles')
+            .select('display_name')
+            .eq('account_id', members.first['account_id'])
+            .maybeSingle();
+        title = profile?['display_name'] as String? ?? 'Anonymous';
+      }
+    }
+    return ConversationSummary(
+      id: conversationId,
+      title: title,
+      isGroup: convo['is_group'] as bool? ?? false,
+    );
+  }
 
-  /// Live stream of messages for one conversation (Supabase Realtime),
-  /// decrypted on arrival, sorted oldest → newest (WhatsApp order — the
-  /// stream itself can emit realtime rows out of order).
-  /// Expired messages are filtered out.
+  /// Watch a single conversation (carries the synced disappear timer).
+  Stream<ConversationInfo> watchConversation(String conversationId) {
+    return _client
+        .from('conversations')
+        .stream(primaryKey: ['id'])
+        .eq('id', conversationId)
+        .map((rows) => ConversationInfo.fromRow(rows.first));
+  }
+
+  /// Set (or clear, with null) the conversation's disappearing timer.
+  /// Stored server-side, so both members stay in sync via realtime.
+  Future<void> updateConversationTimer(
+      String conversationId, int? seconds) async {
+    await _client
+        .from('conversations')
+        .update({'disappear_seconds': seconds}).eq('id', conversationId);
+  }
+
+  Future<String> getOrCreateDm(String myAccountId, String peerAccountId) {
+    return _client
+        .rpc('create_dm_conversation',
+            params: {'a': myAccountId, 'b': peerAccountId})
+        .then((v) => v as String);
+  }
+
+  // ------------------------- groups -------------------------
+
+  /// Create a group: one random AES key, encrypted separately for every
+  /// member (including the creator) with their pairwise X25519 secret.
+  Future<String> createGroupConversation({
+    required String title,
+    required List<Profile> members,
+    required AppSession session,
+  }) async {
+    final keyBytes = await _crypto.generateGroupKeyBytes();
+    final all = [...members, session.profile];
+    final envelopes = <Map<String, String>>[];
+    for (final m in all) {
+      final secret = await _crypto.sharedSecret(
+          session.identity.privateKey, m.publicKey);
+      final box = await _crypto.encryptWithKeyBytes(
+          await secret.extractBytes(), keyBytes);
+      // Prefix the creator id so members know whose public key unlocks this.
+      envelopes.add({
+        'account_id': m.accountId,
+        'encrypted_key':
+            '${session.profile.accountId}:${base64Encode(box.concatenation())}',
+        'nonce': '',
+      });
+    }
+    return _client.rpc('create_group_conversation', params: {
+      'p_title': title,
+      'p_member_ids': all.map((m) => m.accountId).toList(),
+      'p_envelopes': envelopes,
+    }).then((v) => v as String);
+  }
+
+  /// Fetch + decrypt this device's copy of the group key.
+  Future<List<int>> getGroupKey(
+      String conversationId, AppSession session) async {
+    final row = await _client
+        .from('group_keys')
+        .select('encrypted_key')
+        .eq('conversation_id', conversationId)
+        .eq('account_id', session.profile.accountId)
+        .maybeSingle();
+    if (row == null) throw StateError('No group key for you in this group');
+    final raw = row['encrypted_key'] as String;
+    final sep = raw.indexOf(':');
+    final creatorId = raw.substring(0, sep);
+    final box =
+        SecretBox.fromConcatenation(base64Decode(raw.substring(sep + 1)));
+    final creator = await lookupProfile(creatorId);
+    if (creator == null) throw StateError('Group creator profile missing');
+    final secret = await _crypto.sharedSecret(
+        session.identity.privateKey, creator.publicKey);
+    return _crypto.decryptWithSecret(secret, box);
+  }
+
+  Future<List<Profile>> listMembersWithProfiles(String conversationId) async {
+    final members = await _client
+        .from('conversation_members')
+        .select('account_id')
+        .eq('conversation_id', conversationId);
+    final profiles = <Profile>[];
+    for (final m in members) {
+      final p = await lookupProfile(m['account_id'] as String);
+      if (p != null) profiles.add(p);
+    }
+    return profiles;
+  }
+
+  // ------------------------- profiles -------------------------
+
+  Future<Profile?> lookupProfile(String accountId) async {
+    final row = await _client
+        .from('profiles')
+        .select()
+        .eq('account_id', accountId.trim())
+        .maybeSingle();
+    if (row == null) return null;
+    return Profile.fromRow(row);
+  }
+
+  // ------------------------- messages -------------------------
+
   Stream<List<ChatMessage>> watchMessages({
     required String conversationId,
-    required String myAccountId,
-    required NyvoxIdentity identity,
-    Map<String, String> publicKeysByAccount = const {},
+    required Profile peer,
+    required AppSession session,
   }) {
     return _client
         .from('messages')
@@ -131,194 +172,222 @@ class ChatService {
         .eq('conversation_id', conversationId)
         .order('created_at')
         .asyncMap((rows) async {
-      final now = DateTime.now().toUtc();
+      final secret = await _crypto.sharedSecret(
+          session.identity.privateKey, peer.publicKey);
       final result = <ChatMessage>[];
+      final seen = <String>{};
       for (final row in rows) {
+        // Realtime can transiently emit a freshly inserted row twice.
+        if (!seen.add(row['id'] as String)) continue;
         final expiresAt = row['expires_at'] == null
             ? null
             : DateTime.parse(row['expires_at'] as String);
-        if (expiresAt != null && expiresAt.isBefore(now)) continue;
-
-        result.add(await _decryptRow(
-          row,
-          myAccountId: myAccountId,
-          identity: identity,
-          publicKeysByAccount: publicKeysByAccount,
-        ));
+        if (expiresAt != null &&
+            DateTime.now().toUtc().isAfter(expiresAt)) {
+          continue;
+        }
+        final msg = ChatMessage.fromRow(row);
+        if (!msg.hasAttachment) {
+          msg.plaintext = await _decryptText(msg, secret);
+        }
+        result.add(msg);
       }
       result.sort((a, b) => a.createdAt.compareTo(b.createdAt));
       return result;
     });
   }
 
-  /// Raw stream of every message visible to me (RLS limits this to my own
-  /// conversations) — powers local notifications on the home screen.
-  Stream<List<Map<String, dynamic>>> watchAllMessagesRaw() {
+  Stream<List<ChatMessage>> watchGroupMessages({
+    required String conversationId,
+    required List<int> groupKey,
+  }) {
     return _client
         .from('messages')
         .stream(primaryKey: ['id'])
+        .eq('conversation_id', conversationId)
         .order('created_at')
-        .map((rows) => rows.cast<Map<String, dynamic>>());
-  }
-
-  Future<ChatMessage> _decryptRow(
-    Map<String, dynamic> row, {
-    required String myAccountId,
-    required NyvoxIdentity identity,
-    required Map<String, String> publicKeysByAccount,
-  }) async {
-    String? plaintext;
-    try {
-      final senderId = row['sender_account_id'] as String;
-      // Attachments aren't decrypted here (they open in the full-screen viewer).
-      if (row['attachment_path'] != null) {
-        return ChatMessage.fromJson(row,
-            myAccountId: myAccountId, plaintext: null);
+        .asyncMap((rows) async {
+      final result = <ChatMessage>[];
+      final seen = <String>{};
+      for (final row in rows) {
+        if (!seen.add(row['id'] as String)) continue;
+        final expiresAt = row['expires_at'] == null
+            ? null
+            : DateTime.parse(row['expires_at'] as String);
+        if (expiresAt != null &&
+            DateTime.now().toUtc().isAfter(expiresAt)) {
+          continue;
+        }
+        final msg = ChatMessage.fromRow(row);
+        if (!msg.hasAttachment) {
+          msg.plaintext = await _decryptTextWithKey(msg, groupKey);
+        }
+        result.add(msg);
       }
-      // The DM shared secret is X25519(my secret key, PEER's public key).
-      // For messages from the peer, decrypt with the sender's (= peer's) key.
-      // For MY OWN messages, the secret was ALSO derived with the peer's key —
-      // using my own key here derives the wrong secret and AES-GCM fails.
-      final String? decryptWithKey;
-      if (senderId == myAccountId) {
-        final others = publicKeysByAccount.entries
-            .where((e) => e.key != myAccountId);
-        decryptWithKey = others.isEmpty ? null : others.first.value;
-      } else {
-        decryptWithKey = publicKeysByAccount[senderId];
-      }
-      if (decryptWithKey != null) {
-        plaintext = await _crypto.decryptText(
-          myKeyPair: identity.keyPair,
-          senderPublicKeyHex: decryptWithKey,
-          ciphertextB64: row['ciphertext'] as String,
-          nonceB64: row['nonce'] as String,
-        );
-      }
-    } catch (_) {
-      plaintext = null;
-    }
-    return ChatMessage.fromJson(row, myAccountId: myAccountId, plaintext: plaintext);
-  }
-
-  /// Encrypt [text] with the DM shared secret — X25519(my secret key, peer's
-  /// public key) — and upload only the ciphertext. Both sides derive the same
-  /// secret, so either can decrypt.
-  Future<void> sendMessage({
-    required String conversationId,
-    required NyvoxIdentity identity,
-    required Profile peer,
-    required String text,
-    Duration? disappearAfter,
-  }) async {
-    final payload = await _crypto.encryptText(
-      myKeyPair: identity.keyPair,
-      peerPublicKeyHex: peer.publicKey,
-      plaintext: text,
-    );
-
-    await _client.from('messages').insert({
-      'conversation_id': conversationId,
-      'sender_account_id': identity.accountId,
-      'ciphertext': payload.ciphertextB64,
-      'nonce': payload.nonceB64,
-      'expires_at': disappearAfter == null
-          ? null
-          : DateTime.now().toUtc().add(disappearAfter).toIso8601String(),
+      result.sort((a, b) => a.createdAt.compareTo(b.createdAt));
+      return result;
     });
   }
 
-  // -------------------------------------------------------- View-once images
+  Future<String?> _decryptText(ChatMessage msg, SecretKey secret) async {
+    try {
+      final bytes = await _decryptBytes(msg.ciphertext, msg.nonce, secret);
+      return utf8.decode(bytes);
+    } catch (_) {
+      return '⚠️ could not decrypt';
+    }
+  }
 
-  /// Send a view-once image: E2E-encrypt the compressed bytes, store only the
-  /// ciphertext in the private chat-media bucket, and reference it from the
-  /// message row. Destroyed everywhere the moment the recipient opens it.
-  Future<void> sendViewOnceImage({
+  Future<String?> _decryptTextWithKey(ChatMessage msg, List<int> key) async {
+    try {
+      final bytes = await _decryptBytesWithKey(msg.ciphertext, msg.nonce, key);
+      return utf8.decode(bytes);
+    } catch (_) {
+      return '⚠️ could not decrypt';
+    }
+  }
+
+  /// Handles both legacy rows (nonce in column) and concatenation rows.
+  Future<List<int>> _decryptBytes(
+      String ciphertextB64, String nonce, SecretKey secret) async {
+    final box = nonce.isEmpty
+        ? SecretBox.fromConcatenation(base64Decode(ciphertextB64))
+        : SecretBox(base64Decode(ciphertextB64),
+            nonce: base64Decode(nonce));
+    return _crypto.decryptWithSecret(secret, box);
+  }
+
+  Future<List<int>> _decryptBytesWithKey(
+      String ciphertextB64, String nonce, List<int> key) async {
+    final box = nonce.isEmpty
+        ? SecretBox.fromConcatenation(base64Decode(ciphertextB64))
+        : SecretBox(base64Decode(ciphertextB64),
+            nonce: base64Decode(nonce));
+    return _crypto.decryptWithKeyBytes(key, box);
+  }
+
+  Future<SecretKey> _secretFor(AppSession session, Profile peer) =>
+      _crypto.sharedSecret(session.identity.privateKey, peer.publicKey);
+
+  Future<void> sendText({
     required String conversationId,
-    required NyvoxIdentity identity,
-    required Profile peer,
-    required Uint8List compressedJpg,
+    required AppSession session,
+    required Profile? peer,
+    List<int>? groupKey,
+    required String text,
+    int? disappearSeconds,
   }) async {
-    final payload = await _crypto.encryptBytes(
-      myKeyPair: identity.keyPair,
-      peerPublicKeyHex: peer.publicKey,
-      data: compressedJpg,
-    );
-    final path =
-        '$conversationId/${identity.accountId}-${DateTime.now().millisecondsSinceEpoch}.bin';
+    final box = groupKey != null
+        ? await _crypto.encryptWithKeyBytes(groupKey, utf8.encode(text))
+        : await _crypto.encryptWithSecret(
+            await _secretFor(session, peer!), utf8.encode(text));
     await _client.from('messages').insert({
       'conversation_id': conversationId,
-      'sender_account_id': identity.accountId,
+      'sender_account_id': session.profile.accountId,
+      'ciphertext': base64Encode(box.concatenation()),
+      'nonce': '',
+      if (disappearSeconds != null)
+        'expires_at': DateTime.now()
+            .toUtc()
+            .add(Duration(seconds: disappearSeconds))
+            .toIso8601String(),
+    });
+  }
+
+  Future<void> sendViewOnceAttachment({
+    required String conversationId,
+    required AppSession session,
+    required Profile? peer,
+    List<int>? groupKey,
+    required List<int> bytes,
+    required String type, // image | file | voice
+    String? name,
+    int? size,
+  }) async {
+    final box = groupKey != null
+        ? await _crypto.encryptWithKeyBytes(groupKey, bytes)
+        : await _crypto.encryptWithSecret(
+            await _secretFor(session, peer!), bytes);
+    final path =
+        '${session.profile.accountId}/${_crypto.randomId()}.enc';
+    await _client.from('messages').insert({
+      'conversation_id': conversationId,
+      'sender_account_id': session.profile.accountId,
       'ciphertext': '',
       'nonce': '',
       'attachment_path': path,
-      'attachment_nonce': payload.nonceB64,
+      'attachment_nonce': '',
+      'attachment_type': type,
+      'attachment_name': name,
+      'attachment_size': size ?? bytes.length,
     });
-    await _media.uploadCipher(path, base64Decode(payload.ciphertextB64));
+    await _client.storage.from('chat-media').uploadBinary(
+        path, box.concatenation(),
+        fileOptions: const FileOptions(upsert: true));
   }
 
-  /// Open a view-once image: download + decrypt, then — when [destroy] is true
-  /// (the recipient opening it) — delete the storage object AND the message
-  /// row, so it vanishes from both devices via realtime. The sender previewing
-  /// their own photo passes destroy: false so the recipient still gets it.
-  /// Returns the decrypted JPEG bytes for the full-screen viewer.
-  Future<Uint8List> openViewOnceImage({
-    required NyvoxIdentity identity,
-    required String decryptWithPublicKeyHex,
+  /// Download + decrypt an attachment. View-once items (image/file) are
+  /// destroyed everywhere right after decryption; voice notes persist.
+  Future<List<int>> openAttachment({
     required ChatMessage message,
-    required bool destroy,
+    required AppSession session,
+    Profile? peer,
+    List<int>? groupKey,
   }) async {
-    final path = message.attachmentPath!;
-    final cipherBytes = await _media.downloadCipher(path);
-    final plain = await _crypto.decryptBytes(
-      myKeyPair: identity.keyPair,
-      senderPublicKeyHex: decryptWithPublicKeyHex,
-      ciphertextB64: base64Encode(cipherBytes),
-      nonceB64: message.attachmentNonce!,
-    );
-    if (destroy) {
-      try {
-        await _client.from('messages').delete().eq('id', message.id);
-      } finally {
-        try {
-          await _media.delete(path);
-        } catch (_) {}
-      }
+    if (message.attachmentPath == null) throw StateError('No attachment');
+    final packed = await _client.storage
+        .from('chat-media')
+        .download(message.attachmentPath!);
+    final box = SecretBox.fromConcatenation(packed);
+    final bytes = groupKey != null
+        ? await _crypto.decryptWithKeyBytes(groupKey, box)
+        : await _crypto.decryptWithSecret(
+            await _secretFor(session, peer!), box);
+    if (message.isViewOnce) {
+      await _client.storage
+          .from('chat-media')
+          .remove([message.attachmentPath!]);
+      await _client.from('messages').delete().eq('id', message.id);
     }
-    return plain;
+    return bytes;
   }
 
-  Future<void> markRead(String messageId) async {
-    await _client
-        .from('messages')
-        .update({'read_at': DateTime.now().toUtc().toIso8601String()})
-        .eq('id', messageId)
-        .isFilter('read_at', null);
-  }
-
-  /// Mark every incoming message in a conversation as read — clears the
-  /// unread badge and sends read receipts to the sender.
   Future<void> markConversationRead(
       String conversationId, String myAccountId) async {
+    final now = DateTime.now().toUtc().toIso8601String();
     await _client
         .from('messages')
-        .update({'read_at': DateTime.now().toUtc().toIso8601String()})
+        .update({'read_at': now})
         .eq('conversation_id', conversationId)
         .neq('sender_account_id', myAccountId)
         .isFilter('read_at', null);
   }
 
-  /// Delete a single message ("delete for everyone").
-  Future<void> deleteMessage(String messageId) async {
-    await _client.from('messages').delete().eq('id', messageId);
+  Future<List<ChatMessage>> fetchLatestPerConversation(
+      String myAccountId) async {
+    final rows = await _client
+        .from('messages')
+        .select()
+        .order('created_at', ascending: false)
+        .limit(500);
+    final byId = <String, ChatMessage>{};
+    final seen = <String>{};
+    for (final r in rows) {
+      final cid = r['conversation_id'] as String;
+      if (seen.contains(cid)) continue;
+      seen.add(cid);
+      byId[cid] = ChatMessage.fromRow(r);
+    }
+    return byId.values.toList();
   }
 
-  /// Remove expired messages from the server (belt-and-braces alongside the
-  /// optional pg_cron job in schema.sql).
-  Future<void> purgeExpired() async {
-    await _client
+  Future<int> unreadCount(String conversationId, String myAccountId) async {
+    final rows = await _client
         .from('messages')
-        .delete()
-        .lt('expires_at', DateTime.now().toUtc().toIso8601String());
+        .select('id')
+        .eq('conversation_id', conversationId)
+        .neq('sender_account_id', myAccountId)
+        .isFilter('read_at', null);
+    return rows.length;
   }
 }
