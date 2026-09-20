@@ -23,6 +23,11 @@ class _NyvoxAppState extends ConsumerState<NyvoxApp> {
   StreamSubscription<Uri>? _linkSubscription;
   String? _lastInviteId;
 
+  /// An invite that arrived before onboarding finished. It is replayed as
+  /// soon as an identity exists, so scanning a QR on a fresh install still
+  /// opens the chat instead of silently doing nothing.
+  Uri? _pendingInvite;
+
   @override
   void initState() {
     super.initState();
@@ -58,7 +63,11 @@ class _NyvoxAppState extends ConsumerState<NyvoxApp> {
     }
 
     final session = await ref.read(appSessionProvider.future);
-    if (session == null || session.accountId == accountId) return;
+    if (session == null) {
+      _pendingInvite = uri;
+      return;
+    }
+    if (session.accountId == accountId) return;
 
     try {
       final service = ref.read(chatServiceProvider);
@@ -90,6 +99,15 @@ class _NyvoxAppState extends ConsumerState<NyvoxApp> {
 
   @override
   Widget build(BuildContext context) {
+    // Replay an invite that arrived before the user had an identity.
+    ref.listen(appSessionProvider, (previous, next) {
+      final pending = _pendingInvite;
+      if (pending != null && next.value != null) {
+        _pendingInvite = null;
+        _queueInvite(pending);
+      }
+    });
+
     final session = ref.watch(appSessionProvider);
 
     return MaterialApp(

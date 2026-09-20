@@ -352,54 +352,12 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     final overlay = Overlay.of(context);
     late final OverlayEntry entry;
     entry = OverlayEntry(
-      builder: (_) => Positioned.fill(
-        child: IgnorePointer(
-          child: Center(
-            child: TweenAnimationBuilder<double>(
-              tween: Tween(begin: 0.65, end: 1),
-              duration: const Duration(milliseconds: 260),
-              curve: Curves.easeOutBack,
-              builder: (_, value, child) => Transform.scale(
-                scale: value,
-                child: Opacity(opacity: value.clamp(0, 1), child: child),
-              ),
-              child: Container(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 22, vertical: 16),
-                decoration: BoxDecoration(
-                  color: NyvoxTheme.surfaceRaised,
-                  borderRadius: BorderRadius.circular(18),
-                  border: Border.all(color: NyvoxTheme.accent),
-                  boxShadow: const [
-                    BoxShadow(color: Colors.black54, blurRadius: 24),
-                  ],
-                ),
-                child: const Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Icon(Icons.lock, color: NyvoxTheme.accent, size: 34),
-                    SizedBox(height: 8),
-                    Text(
-                      'Secure message sent',
-                      style: TextStyle(fontWeight: FontWeight.w700),
-                    ),
-                    Text(
-                      'Hidden from this device',
-                      style: TextStyle(
-                        color: NyvoxTheme.textSecondary,
-                        fontSize: 12,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ),
-          ),
-        ),
-      ),
+      builder: (_) => const _SecureSentToast(),
     );
     overlay.insert(entry);
-    Future.delayed(const Duration(milliseconds: 1200), entry.remove);
+    Future.delayed(const Duration(milliseconds: 1700), () {
+      if (entry.mounted) entry.remove();
+    });
   }
 
   Future<void> _leaveChat() async {
@@ -530,20 +488,23 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
           if (highSecurity)
             Container(
               width: double.infinity,
-              color: Colors.redAccent.withValues(alpha: 0.12),
-              padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 16),
+              color: NyvoxTheme.surface,
+              padding: const EdgeInsets.symmetric(vertical: 7, horizontal: 16),
               child: const Row(
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
-                  Icon(Icons.security, size: 14, color: Colors.redAccent),
+                  Icon(Icons.shield_outlined,
+                      size: 13, color: NyvoxTheme.accent),
                   SizedBox(width: 6),
                   Flexible(
                     child: Text(
-                      'High Security — sent messages hide immediately; '
-                      'received messages are destroyed when you leave',
+                      'High Security · messages leave no trace on either device',
                       textAlign: TextAlign.center,
-                      style:
-                          TextStyle(fontSize: 12, color: Colors.redAccent),
+                      style: TextStyle(
+                        fontSize: 11.5,
+                        letterSpacing: 0.2,
+                        color: NyvoxTheme.textSecondary,
+                      ),
                     ),
                   ),
                 ],
@@ -829,6 +790,97 @@ class _Composer extends StatelessWidget {
                 onPressed: onStartRecording,
               ),
           ],
+        ),
+      ),
+    );
+  }
+}
+
+/// Minimal, on-theme confirmation that a High Security message left the
+/// device: a small pill that floats up above the composer, holds briefly,
+/// then fades away. No red, no full-screen dialog.
+class _SecureSentToast extends StatefulWidget {
+  const _SecureSentToast();
+
+  @override
+  State<_SecureSentToast> createState() => _SecureSentToastState();
+}
+
+class _SecureSentToastState extends State<_SecureSentToast>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _controller = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 260),
+    reverseDuration: const Duration(milliseconds: 220),
+  );
+
+  @override
+  void initState() {
+    super.initState();
+    _controller.forward();
+    Future.delayed(const Duration(milliseconds: 1250), () {
+      if (mounted) _controller.reverse();
+    });
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final curved =
+        CurvedAnimation(parent: _controller, curve: Curves.easeOutCubic);
+
+    return Positioned(
+      left: 0,
+      right: 0,
+      bottom: MediaQuery.of(context).viewInsets.bottom + 96,
+      child: IgnorePointer(
+        child: Center(
+          child: FadeTransition(
+            opacity: curved,
+            child: SlideTransition(
+              position: Tween<Offset>(
+                begin: const Offset(0, 0.45),
+                end: Offset.zero,
+              ).animate(curved),
+              child: Container(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                decoration: BoxDecoration(
+                  color: NyvoxTheme.surfaceRaised,
+                  borderRadius: BorderRadius.circular(100),
+                  border: Border.all(color: NyvoxTheme.border),
+                  boxShadow: const [
+                    BoxShadow(
+                      color: Color(0x66000000),
+                      blurRadius: 18,
+                      offset: Offset(0, 6),
+                    ),
+                  ],
+                ),
+                child: const Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(Icons.lock_rounded,
+                        size: 16, color: NyvoxTheme.accent),
+                    SizedBox(width: 8),
+                    Text(
+                      'Sent · hidden on this device',
+                      style: TextStyle(
+                        fontSize: 13,
+                        fontWeight: FontWeight.w600,
+                        color: NyvoxTheme.textPrimary,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
         ),
       ),
     );
