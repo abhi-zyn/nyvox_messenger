@@ -64,6 +64,7 @@ class ChatService {
           .from('messages')
           .select()
           .eq('conversation_id', convoId)
+          .or('high_security.eq.false,sender_account_id.neq.$myAccountId')
           .order('created_at', ascending: false)
           .limit(1)
           .maybeSingle();
@@ -120,6 +121,13 @@ class ChatService {
         .update({'disappear_seconds': seconds}).eq('id', conversationId);
   }
 
+  Future<void> updateConversationHighSecurity(
+      String conversationId, bool enabled) async {
+    await _client
+        .from('conversations')
+        .update({'high_security': enabled}).eq('id', conversationId);
+  }
+
   Future<List<Profile>> listMemberProfiles(String conversationId) async {
     final rows = await _client
         .from('conversation_members')
@@ -149,6 +157,10 @@ class ChatService {
       for (final row in rows) {
         // Realtime can transiently emit a freshly inserted row twice.
         if (!seen.add(row['id'] as String)) continue;
+        if ((row['high_security'] as bool? ?? false) &&
+            row['sender_account_id'] == myAccountId) {
+          continue;
+        }
         final expiresAt = row['expires_at'] == null
             ? null
             : DateTime.parse(row['expires_at'] as String);
@@ -215,6 +227,7 @@ class ChatService {
     required Profile peer,
     required String text,
     Duration? disappearAfter,
+    bool highSecurity = false,
   }) async {
     final payload = await _crypto.encryptText(
       myKeyPair: identity.keyPair,
@@ -227,6 +240,7 @@ class ChatService {
       'sender_account_id': identity.accountId,
       'ciphertext': payload.ciphertextB64,
       'nonce': payload.nonceB64,
+      'high_security': highSecurity,
       'expires_at': disappearAfter == null
           ? null
           : DateTime.now().toUtc().add(disappearAfter).toIso8601String(),
@@ -238,6 +252,7 @@ class ChatService {
     required NyvoxIdentity identity,
     required Profile peer,
     required Uint8List compressedJpg,
+    bool highSecurity = false,
   }) =>
       sendViewOnceAttachment(
         conversationId: conversationId,
@@ -245,6 +260,7 @@ class ChatService {
         peer: peer,
         bytes: compressedJpg,
         type: 'image',
+        highSecurity: highSecurity,
       );
 
   Future<void> sendViewOnceAttachment({
@@ -255,6 +271,7 @@ class ChatService {
     required String type,
     String? name,
     int? size,
+    bool highSecurity = false,
   }) async {
     final payload = await _crypto.encryptBytes(
       myKeyPair: identity.keyPair,
@@ -273,6 +290,7 @@ class ChatService {
       'attachment_type': type,
       'attachment_name': name,
       'attachment_size': size ?? bytes.length,
+      'high_security': highSecurity,
     });
     await _media.uploadCipher(path, base64Decode(payload.ciphertextB64));
   }
@@ -336,6 +354,36 @@ class ChatService {
 
   Future<void> deleteMessage(String messageId) async {
     await _client.from('messages').delete().eq('id', messageId);
+  }
+
+  /// Permanently removes secure incoming messages when the recipient leaves
+  /// the chat. Ciphertext attachments are removed from Storage as well.
+  Future<void> purgeIncomingHighSecurity(
+      String conversationId, String myAccountId) async {
+    final rows = await _client
+        .from('messages')
+        .select('id, attachment_path')
+        .eq('conversation_id', conversationId)
+        .eq('high_security', true)
+        .neq('sender_account_id', myAccountId);
+
+    final items = (rows as List).cast<Map<String, dynamic>>();
+    if (items.isEmpty) return;
+
+    await _client
+        .from('messages')
+        .delete()
+        .eq('conversation_id', conversationId)
+        .eq('high_security', true)
+        .neq('sender_account_id', myAccountId);
+
+    for (final item in items) {
+      final path = item['attachment_path'] as String?;
+      if (path == null) continue;
+      try {
+        await _media.delete(path);
+      } catch (_) {}
+    }
   }
 
   Future<void> purgeExpired() async {

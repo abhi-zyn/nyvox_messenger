@@ -36,6 +36,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
         final createdAt = DateTime.parse(row['created_at'] as String);
         if (createdAt.isBefore(_listenerStart)) continue;
         notificationService.showMessageNotification();
+        // Refresh the summaries immediately so the WhatsApp-style unread
+        // counter and latest-message ordering update without a manual reload.
+        ref.invalidate(conversationsProvider);
       }
     });
   }
@@ -130,13 +133,15 @@ class _ConversationTile extends ConsumerWidget {
           if (summary.unreadCount > 0) ...[
             const SizedBox(width: 8),
             Container(
-              padding: const EdgeInsets.all(6),
+              constraints: const BoxConstraints(minWidth: 22, minHeight: 22),
+              alignment: Alignment.center,
+              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
               decoration: const BoxDecoration(
                 color: NyvoxTheme.accent,
                 shape: BoxShape.circle,
               ),
               child: Text(
-                '${summary.unreadCount}',
+                summary.unreadCount > 99 ? '99+' : '${summary.unreadCount}',
                 style: const TextStyle(
                   color: Colors.black,
                   fontSize: 11,

@@ -40,6 +40,7 @@ class ChatMessage {
     this.attachmentType,
     this.attachmentName,
     this.attachmentSize,
+    this.highSecurity = false,
   });
 
   final String id;
@@ -61,6 +62,7 @@ class ChatMessage {
   final String? attachmentType; // image | file | voice
   final String? attachmentName;
   final int? attachmentSize;
+  final bool highSecurity;
 
   bool get hasAttachment => attachmentPath != null;
 
@@ -94,6 +96,7 @@ class ChatMessage {
         attachmentType: json['attachment_type'] as String?,
         attachmentName: json['attachment_name'] as String?,
         attachmentSize: json['attachment_size'] as int?,
+        highSecurity: json['high_security'] as bool? ?? false,
       );
 }
 
@@ -130,12 +133,14 @@ class ConversationInfo {
     required this.isGroup,
     this.title,
     this.disappearSeconds,
+    this.highSecurity = false,
   });
 
   final String id;
   final bool isGroup;
   final String? title;
   final int? disappearSeconds;
+  final bool highSecurity;
 
   factory ConversationInfo.fromJson(Map<String, dynamic> json) =>
       ConversationInfo(
@@ -143,5 +148,6 @@ class ConversationInfo {
         isGroup: json['is_group'] as bool? ?? false,
         title: json['title'] as String?,
         disappearSeconds: json['disappear_seconds'] as int?,
+        highSecurity: json['high_security'] as bool? ?? false,
       );
 }
