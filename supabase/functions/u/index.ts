@@ -11,7 +11,11 @@
 // let Chrome fall back to `S.browser_fallback_url` when the app is missing.
 // Anything that is not a mobile browser gets a short plain-text page.
 
-const PACKAGE = "com.nyvox.nyvox_messenger";
+/// Left empty on purpose. Pinning `package=` makes Chrome fall straight
+/// through to the fallback URL whenever the installed applicationId differs
+/// (debug flavours, a different --org). Resolving by scheme alone is enough:
+/// only an app that registered the `nyvox` scheme can answer.
+const PACKAGE = "";
 const ID_PATTERN = /^vc[0-9a-f]{64}$/;
 
 /// Public base of this function. Behind the gateway `url.origin` is an
@@ -28,10 +32,12 @@ function intentUrl(id: string, fallback: string): string {
   return [
     `intent://u/${id}#Intent`,
     "scheme=nyvox",
-    `package=${PACKAGE}`,
+    "action=android.intent.action.VIEW",
+    "category=android.intent.category.BROWSABLE",
+    PACKAGE ? `package=${PACKAGE}` : "",
     `S.browser_fallback_url=${encodeURIComponent(fallback)}`,
     "end",
-  ].join(";") + ";";
+  ].filter(Boolean).join(";") + ";";
 }
 
 function textPage(body: string, status = 200): Response {
