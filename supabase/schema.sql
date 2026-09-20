@@ -41,6 +41,7 @@ create table if not exists public.conversations (
   id          uuid primary key default gen_random_uuid(),
   is_group    boolean not null default false,
   title       text,                            -- groups only; DMs stay untitled
+  high_security boolean not null default false,
   created_at  timestamptz not null default now()
 );
 
@@ -62,7 +63,8 @@ create table if not exists public.messages (
   nonce             text not null,             -- AES-GCM nonce (base64)
   created_at        timestamptz not null default now(),
   expires_at        timestamptz,               -- null = keep forever
-  read_at           timestamptz
+  read_at           timestamptz,
+  high_security     boolean not null default false
 );
 
 create index if not exists messages_conversation_created_idx

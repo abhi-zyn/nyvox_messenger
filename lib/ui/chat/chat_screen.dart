@@ -53,6 +53,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   DateTime? _recordStarted;
   Timer? _recordTicker;
   bool _hasText = false;
+  bool _exiting = false;
 
   @override
   void initState() {
@@ -81,7 +82,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     ref.invalidate(conversationsProvider);
   }
 
-  Future<void> _send(int? disappearSeconds) async {
+  Future<void> _send(int? disappearSeconds, bool highSecurity) async {
     final text = _composer.text.trim();
     if (text.isEmpty || _sending) return;
 
@@ -96,10 +97,12 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
             identity: session.identity,
             peer: widget.peer,
             text: text,
+            highSecurity: highSecurity,
             disappearAfter: disappearSeconds == null
                 ? null
                 : Duration(seconds: disappearSeconds),
           );
+      if (highSecurity && mounted) _showSecureSentAnimation();
     } catch (e) {
       if (mounted) {
         _composer.text = text;
@@ -126,12 +129,18 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       setState(() => _sendingAttachment = true);
       final bytes = await picked.readAsBytes();
       final compressed = ChatMediaService().compressChatImage(bytes);
+      final highSecurity = ref
+              .read(conversationInfoProvider(widget.conversationId))
+              .value
+              ?.highSecurity ??
+          false;
       await ref.read(chatServiceProvider).sendViewOnceAttachment(
             conversationId: widget.conversationId,
             identity: session.identity,
             peer: widget.peer,
             bytes: compressed,
             type: 'image',
+            highSecurity: highSecurity,
           );
     } catch (e) {
       if (mounted) {
@@ -152,6 +161,11 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       final picked = await FileService().pickFile();
       if (picked == null) return;
       setState(() => _sendingAttachment = true);
+      final highSecurity = ref
+              .read(conversationInfoProvider(widget.conversationId))
+              .value
+              ?.highSecurity ??
+          false;
       await ref.read(chatServiceProvider).sendViewOnceAttachment(
             conversationId: widget.conversationId,
             identity: session.identity,
@@ -160,6 +174,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
             type: 'file',
             name: picked.name,
             size: picked.size,
+            highSecurity: highSecurity,
           );
     } catch (e) {
       if (mounted) {
@@ -251,6 +266,11 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     try {
       setState(() => _sendingAttachment = true);
       final bytes = await file.readAsBytes();
+      final highSecurity = ref
+              .read(conversationInfoProvider(widget.conversationId))
+              .value
+              ?.highSecurity ??
+          false;
       await ref.read(chatServiceProvider).sendViewOnceAttachment(
             conversationId: widget.conversationId,
             identity: session.identity,
@@ -258,6 +278,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
             bytes: bytes,
             type: 'voice',
             name: 'Voice note',
+            highSecurity: highSecurity,
           );
     } catch (e) {
       if (mounted) {
@@ -287,6 +308,118 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     }
   }
 
+  Future<void> _setHighSecurity(bool enabled) async {
+    if (enabled) {
+      final confirmed = await showDialog<bool>(
+        context: context,
+        builder: (context) => AlertDialog(
+          icon: const Icon(Icons.security, color: NyvoxTheme.accent),
+          title: const Text('Enable High Security?'),
+          content: const Text(
+            'Messages you send will disappear from your screen immediately. '
+            'The recipient can view them only until they leave this chat, then '
+            'the encrypted server copy is permanently deleted.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(context, true),
+              child: const Text('Enable'),
+            ),
+          ],
+        ),
+      );
+      if (confirmed != true) return;
+    }
+
+    try {
+      await ref
+          .read(chatServiceProvider)
+          .updateConversationHighSecurity(widget.conversationId, enabled);
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Could not update High Security: $e')),
+        );
+      }
+    }
+  }
+
+  void _showSecureSentAnimation() {
+    final overlay = Overlay.of(context);
+    late final OverlayEntry entry;
+    entry = OverlayEntry(
+      builder: (_) => Positioned.fill(
+        child: IgnorePointer(
+          child: Center(
+            child: TweenAnimationBuilder<double>(
+              tween: Tween(begin: 0.65, end: 1),
+              duration: const Duration(milliseconds: 260),
+              curve: Curves.easeOutBack,
+              builder: (_, value, child) => Transform.scale(
+                scale: value,
+                child: Opacity(opacity: value.clamp(0, 1), child: child),
+              ),
+              child: Container(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 22, vertical: 16),
+                decoration: BoxDecoration(
+                  color: NyvoxTheme.surfaceRaised,
+                  borderRadius: BorderRadius.circular(18),
+                  border: Border.all(color: NyvoxTheme.accent),
+                  boxShadow: const [
+                    BoxShadow(color: Colors.black54, blurRadius: 24),
+                  ],
+                ),
+                child: const Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(Icons.lock, color: NyvoxTheme.accent, size: 34),
+                    SizedBox(height: 8),
+                    Text(
+                      'Secure message sent',
+                      style: TextStyle(fontWeight: FontWeight.w700),
+                    ),
+                    Text(
+                      'Hidden from this device',
+                      style: TextStyle(
+                        color: NyvoxTheme.textSecondary,
+                        fontSize: 12,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+    overlay.insert(entry);
+    Future.delayed(const Duration(milliseconds: 1200), entry.remove);
+  }
+
+  Future<void> _leaveChat() async {
+    if (_exiting) return;
+    _exiting = true;
+    final session = await ref.read(appSessionProvider.future);
+    if (session != null) {
+      try {
+        await ref.read(chatServiceProvider).purgeIncomingHighSecurity(
+              widget.conversationId,
+              session.accountId,
+            );
+      } catch (_) {
+        // A later exit/open can retry; never trap the user in the chat.
+      }
+    }
+    ref.invalidate(conversationsProvider);
+    if (mounted) Navigator.of(context).pop();
+  }
+
   String get _recordingElapsed {
     if (_recordStarted == null) return '0:00';
     final d = DateTime.now().difference(_recordStarted!);
@@ -308,10 +441,16 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     final messages = ref.watch(messagesProvider(args));
     final info = ref.watch(conversationInfoProvider(widget.conversationId));
     final timerSeconds = info.value?.disappearSeconds;
+    final highSecurity = info.value?.highSecurity ?? false;
     final label = _timerLabel(timerSeconds);
     final avatarUrl = widget.peer.avatarUrl;
 
-    return Scaffold(
+    return PopScope(
+      canPop: false,
+      onPopInvokedWithResult: (didPop, result) {
+        if (!didPop) _leaveChat();
+      },
+      child: Scaffold(
       appBar: AppBar(
         titleSpacing: 0,
         title: Row(
@@ -349,6 +488,15 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
           ],
         ),
         actions: [
+          IconButton(
+            tooltip:
+                highSecurity ? 'Disable High Security' : 'Enable High Security',
+            icon: Icon(
+              highSecurity ? Icons.security : Icons.security_outlined,
+              color: highSecurity ? NyvoxTheme.accent : null,
+            ),
+            onPressed: () => _setHighSecurity(!highSecurity),
+          ),
           PopupMenuButton<String>(
             icon: Icon(
               Icons.timer_outlined,
@@ -379,6 +527,28 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       ),
       body: Column(
         children: [
+          if (highSecurity)
+            Container(
+              width: double.infinity,
+              color: Colors.redAccent.withValues(alpha: 0.12),
+              padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 16),
+              child: const Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Icon(Icons.security, size: 14, color: Colors.redAccent),
+                  SizedBox(width: 6),
+                  Flexible(
+                    child: Text(
+                      'High Security — sent messages hide immediately; '
+                      'received messages are destroyed when you leave',
+                      textAlign: TextAlign.center,
+                      style:
+                          TextStyle(fontSize: 12, color: Colors.redAccent),
+                    ),
+                  ),
+                ],
+              ),
+            ),
           if (timerSeconds != null)
             Container(
               width: double.infinity,
@@ -444,13 +614,14 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
             recording: _recording,
             recordingElapsed: _recordingElapsed,
             hasText: _hasText,
-            onSend: () => _send(timerSeconds),
+            onSend: () => _send(timerSeconds, highSecurity),
             onAttach: _openAttachSheet,
             onStartRecording: _startRecording,
             onCancelRecording: () => _stopRecording(send: false),
             onSendRecording: () => _stopRecording(send: true),
           ),
         ],
+      ),
       ),
     );
   }
