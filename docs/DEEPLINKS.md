@@ -18,11 +18,17 @@ dead-ended. Android's supported hand-off is an `intent://` URL:
 intent://u/<id>#Intent;scheme=nyvox;package=com.nyvox.nyvox_messenger;S.browser_fallback_url=<https fallback>;end
 ```
 
-The function now emits that on Android (plain `nyvox://` on iOS) and keeps a
-tappable "Open in Nyvox" button. If the app is not installed, Chrome opens
-`S.browser_fallback_url` — today the same page with `?web=1`, which shows the
-Account ID for manual entry. Point `FALLBACK_SITE` at your own website once
-it exists.
+There is a second constraint: the Supabase Functions gateway rewrites
+`text/html` responses to `content-type: text/plain` and applies a
+`sandbox` CSP, so an HTML landing page is displayed as raw source and its
+JavaScript never runs. The function therefore returns **no HTML** — it answers
+mobile browsers with a `302` straight to the intent URL (plain `nyvox://` on
+iOS).
+
+If the app is not installed, Chrome opens `S.browser_fallback_url` — today the
+same endpoint with `?web=1`, which returns a short plain-text page containing
+the Account ID. Point `FALLBACK_SITE` at your own website once it exists; a
+site you control can also serve a proper branded HTML page.
 
 ## Required Android manifest entry
 
